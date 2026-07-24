@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AHG CONSTRUFERRET POS</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260718-ai-smart3" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Sistema de ventas y recomendaciones con IA</p>
+        <h1>AHG CONSTRUFERRET</h1>
+        <p id="issuer-label" class="issuer-label">Emisor fiscal: UTESA</p>
+      </div>
+      <div class="status-strip">
+        <span id="db-status" class="status-pill">BD</span>
+        <span id="fiscal-status" class="status-pill warning">IMECF sin configurar</span>
+        <span id="user-status" class="user-pill">Usuario</span>
+        <button id="logout-button" class="logout-button" type="button">Salir</button>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Secciones principales">
+      <button class="tab active" data-view="sale">Venta</button>
+      <button class="tab" data-view="products">Maestro de artículos</button>
+      <button class="tab" data-view="clients">Clientes</button>
+      <button class="tab" data-view="suppliers">Proveedores</button>
+      <button class="tab" data-view="preinvoices">Pre-Facturas</button>
+      <button class="tab" data-view="assistant">Asistente IA</button>
+      <button class="tab" data-view="inventory">Inventario</button>
+      <button class="tab" data-view="fiscal">Gestión Fiscal</button>
+      <button class="tab" data-view="reports">Facturas</button>
+    </nav>
+
+    <main class="app-shell">
+      <section id="sale" class="view active">
+        <div class="sale-layout">
+          <section class="panel products-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Mostrador</p>
+                <h2>Artículos</h2>
+              </div>
+              <input id="product-search" class="input" type="search" placeholder="Código, producto o problema" />
+            </div>
+            <div id="product-list" class="product-list"></div>
+          </section>
+
+          <section class="panel cart-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Caja</p>
+                <h2>Pre-Factura</h2>
+              </div>
+              <button id="clear-cart" class="icon-button" title="Limpiar Pre-Factura">&times;</button>
+            </div>
+
+            <div id="cart-list" class="cart-list empty-state">Sin artículos</div>
+
+            <div class="fiscal-box">
+              <div class="fiscal-note">
+                <strong id="fiscal-mode-title">Facturacion local</strong>
+                <span id="fiscal-mode-copy">El comprobante se guardará localmente.</span>
+              </div>
+              <div class="segmented" role="group" aria-label="Tipo de comprobante">
+                <button class="segment active" data-ecf="32">e-CF 32</button>
+                <button class="segment" data-ecf="31">e-CF 31</button>
+              </div>
+              <div class="form-grid">
+                <label>
+                  Cliente registrado
+                  <select id="client-select" class="input">
+                    <option value="">Consumidor final / nuevo cliente</option>
+                  </select>
+                </label>
+                <label>
+                  RNC / Cédula
+                  <div class="lookup-input">
+                    <input id="client-rnc" class="input" inputmode="numeric" autocomplete="off" />
+                    <button id="lookup-client" class="lookup-button" type="button">Consultar</button>
+                  </div>
+                </label>
+                <label>
+                  Cliente
+                  <input id="client-name" class="input" autocomplete="name" />
+                </label>
+                <label>
+                  Teléfono
+                  <input id="client-phone" class="input" autocomplete="tel" />
+                </label>
+                <label>
+                  Correo
+                  <input id="client-email" class="input" type="email" autocomplete="email" />
+                </label>
+                <label>
+                  Dirección
+                  <input id="client-address" class="input" autocomplete="street-address" />
+                </label>
+                <label>
+                  Pago
+                  <select id="payment-method" class="input">
+                    <option value="efectivo">Efectivo</option>
+                    <option value="tarjeta">Tarjeta</option>
+                    <option value="paypal">PayPal</option>
+                    <option value="transferencia">Transferencia</option>
+                    <option value="credito">Crédito</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Nota de la pre-factura
+                <input id="sale-notes" class="input" maxlength="300" placeholder="Referencia, entrega o comentario interno" />
+              </label>
+              <label>
+                Descuento general %
+                <input id="general-discount" class="input" type="number" min="0" max="100" step="0.01" value="0" />
+              </label>
+              <div id="client-validation" class="client-validation" hidden></div>
+              <div id="buyer-requirement" class="buyer-requirement"></div>
+              <div id="online-payment-status" class="online-payment-status" hidden></div>
+              <button id="open-payment-gateway" class="secondary-button payment-gateway-button" type="button" hidden>
+                Abrir pasarela de pago
+              </button>
+            </div>
+
+            <div class="totals">
+              <div><span>Subtotal</span><strong id="subtotal">RD$0.00</strong></div>
+              <div><span>Descuento</span><strong id="discount-total">RD$0.00</strong></div>
+              <div><span>ITBIS 18%</span><strong id="tax">RD$0.00</strong></div>
+              <div class="grand-total"><span>Total</span><strong id="total">RD$0.00</strong></div>
+            </div>
+
+            <div class="checkout-actions">
+              <button id="save-preinvoice" class="secondary-button">Guardar pre-factura</button>
+              <button id="issue-invoice" class="primary-button">Emitir comprobante</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="products" class="view">
+        <div class="master-layout">
+          <section class="panel product-form-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Catálogo</p>
+                <h2 id="product-form-title">Nuevo artículo</h2>
+              </div>
+              <button id="cancel-product-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+            </div>
+            <form id="product-form" class="product-form">
+              <input id="master-product-id" type="hidden" />
+              <div class="form-grid">
+                <label>Nombre<input id="master-name" class="input" maxlength="150" required /></label>
+                <label>Referencia / SKU<input id="master-sku" class="input" maxlength="60" required /></label>
+                <label>Código del artículo<input id="master-id" class="input" maxlength="40" placeholder="Automático o código de barras" /></label>
+                <label>Código de barras<input id="master-barcode" class="input" maxlength="80" /></label>
+                <label>Marca<input id="master-brand" class="input" maxlength="80" /></label>
+                <label>Unidad de venta<input id="master-unit" class="input" maxlength="40" value="unidad" /></label>
+                <label>Ubicación en almacén<input id="master-location" class="input" maxlength="80" /></label>
+                <label>Proveedor habitual<input id="master-supplier" class="input" maxlength="120" /></label>
+                <label>
+                  Categoría
+                  <input id="master-category" class="input" list="category-options" maxlength="80" required />
+                  <datalist id="category-options"></datalist>
+                </label>
+                <label>Costo<input id="master-cost" class="input" type="number" min="0" step="0.01" value="0" /></label>
+                <label>Precio de venta<input id="master-price" class="input" type="number" min="0" step="0.01" required /></label>
+                <label>ITBIS %<input id="master-tax" class="input" type="number" min="0" max="100" step="0.01" value="18" /></label>
+                <label>Stock actual<input id="master-stock" class="input" type="number" min="0" step="0.001" value="0" /></label>
+                <label>Stock mínimo<input id="master-min-stock" class="input" type="number" min="0" step="0.001" value="0" /></label>
+              </div>
+              <label>
+                Descripción técnica
+                <textarea id="master-description" class="input product-description" maxlength="500" rows="3" placeholder="Uso, materiales, medidas y aplicaciones del artículo"></textarea>
+              </label>
+              <label>
+                Términos para búsqueda e IA
+                <input id="master-tags" class="input" maxlength="500" placeholder="Ej.: tubería agua caliente reparación fuga cpvc" />
+              </label>
+              <label class="check-field"><input id="master-active" type="checkbox" checked />Artículo activo para venta y recomendaciones</label>
+              <div id="product-form-error" class="notice-error" hidden></div>
+              <button id="save-product" class="primary-button" type="submit">Guardar artículo</button>
+            </form>
+          </section>
+
+          <section class="panel product-master-list">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Maestro</p>
+                <h2>Artículos registrados</h2>
+              </div>
+              <input id="master-search" class="input" type="search" placeholder="Nombre, SKU, código o categoría" />
+            </div>
+            <div id="product-master-summary" class="master-summary"></div>
+            <div class="table-wrap">
+              <table class="master-table">
+                <thead>
+                  <tr><th>Artículo</th><th>Categoría</th><th>Costo</th><th>Precio</th><th>Stock</th><th>Estado</th><th></th></tr>
+                </thead>
+                <tbody id="product-master-table"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="clients" class="view">
+        <div class="master-layout">
+          <section class="panel product-form-panel">
+            <div class="panel-head">
+              <div><p class="eyebrow">Relaciones comerciales</p><h2 id="client-form-title">Nuevo cliente</h2></div>
+              <button id="cancel-client-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+            </div>
+            <form id="client-form" class="product-form">
+              <input id="client-form-id" type="hidden" />
+              <label>Nombre o razón social<input id="customer-name" class="input" maxlength="180" required /></label>
+              <div class="form-grid">
+                <label>RNC / Cédula
+                  <div class="lookup-input">
+                    <input id="customer-rnc" class="input" inputmode="numeric" maxlength="13" required />
+                    <button id="lookup-customer" class="lookup-button" type="button">Consultar RNC/Cédula</button>
+                  </div>
+                </label>
+                <label>Teléfono<input id="customer-phone" class="input" inputmode="numeric" maxlength="12" required /></label>
+                <label>Correo<input id="customer-email" class="input" type="email" maxlength="160" required /></label>
+                <label>Dirección<input id="customer-address" class="input" maxlength="240" required /></label>
+                <label>Actividad DGII<textarea id="customer-activity" class="input product-description" maxlength="500" rows="2" readonly></textarea></label>
+              </div>
+              <label>Notas<textarea id="customer-notes" class="input product-description" maxlength="500" rows="3"></textarea></label>
+              <label class="check-field"><input id="customer-active" type="checkbox" checked />Cliente activo</label>
+              <div id="customer-lookup-result" class="client-validation" hidden></div>
+              <div id="client-form-error" class="notice-error" hidden></div>
+              <button id="save-client" class="primary-button" type="submit">Guardar cliente</button>
+            </form>
+          </section>
+          <section class="panel product-master-list">
+            <div class="panel-head">
+              <div><p class="eyebrow">Directorio</p><h2>Clientes registrados</h2></div>
+              <input id="client-search" class="input" type="search" placeholder="Nombre, RNC, teléfono o correo" />
+            </div>
+            <div id="client-list" class="client-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="suppliers" class="view">
+        <div class="master-layout">
+          <section class="panel product-form-panel">
+            <div class="panel-head">
+              <div><p class="eyebrow">Abastecimiento</p><h2 id="supplier-form-title">Nuevo proveedor</h2></div>
+              <button id="cancel-supplier-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+            </div>
+            <form id="supplier-form" class="product-form">
+              <input id="supplier-form-id" type="hidden" />
+              <label>Nombre o razón social<input id="supplier-name" class="input" maxlength="180" required /></label>
+              <div class="form-grid">
+                <label>RNC / Cédula
+                  <div class="lookup-input">
+                    <input id="supplier-rnc" class="input" inputmode="numeric" maxlength="13" required />
+                    <button id="lookup-supplier" class="lookup-button" type="button">Consultar RNC/Cédula</button>
+                  </div>
+                </label>
+                <label>Teléfono<input id="supplier-phone" class="input" inputmode="numeric" maxlength="12" required /></label>
+                <label>Correo<input id="supplier-email" class="input" type="email" maxlength="160" required /></label>
+                <label>Dirección<input id="supplier-address" class="input" maxlength="240" required /></label>
+                <label>Actividad DGII<textarea id="supplier-activity" class="input product-description" maxlength="500" rows="2" readonly></textarea></label>
+                <label>Contacto telefónico<input id="supplier-contact" class="input" inputmode="numeric" maxlength="12" /></label>
+              </div>
+              <label>Notas<textarea id="supplier-notes" class="input product-description" maxlength="500" rows="3"></textarea></label>
+              <label class="check-field"><input id="supplier-active" type="checkbox" checked />Proveedor activo</label>
+              <div id="supplier-lookup-result" class="client-validation" hidden></div>
+              <div id="supplier-form-error" class="notice-error" hidden></div>
+              <button id="save-supplier" class="primary-button" type="submit">Guardar proveedor</button>
+            </form>
+          </section>
+          <section class="panel product-master-list">
+            <div class="panel-head">
+              <div><p class="eyebrow">Directorio</p><h2>Proveedores registrados</h2></div>
+              <input id="supplier-search" class="input" type="search" placeholder="Nombre, RNC, teléfono o correo" />
+            </div>
+            <div id="supplier-list" class="client-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="preinvoices" class="view">
+        <section class="panel">
+          <div class="panel-head">
+            <div><p class="eyebrow">Ventas pendientes</p><h2>Pre-Facturas guardadas</h2></div>
+            <button id="refresh-preinvoices" class="secondary-button">Actualizar</button>
+          </div>
+          <div id="preinvoice-list" class="preinvoice-list"></div>
+        </section>
+      </section>
+
+      <section id="assistant" class="view">
+        <section class="panel assistant-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">B&uacute;squeda inteligente</p>
+              <h2>Asistente de art&iacute;culos</h2>
+            </div>
+          </div>
+          <div class="assistant-search">
+            <label for="ai-query">&iquest;Qu&eacute; necesita el cliente?</label>
+            <textarea id="ai-query" class="textarea" rows="2" placeholder="Ej.: Necesito reparar una fuga de agua caliente"></textarea>
+            <button id="send-ai" class="primary-button compact" type="button">Consultar</button>
+            <label for="ai-budget">Presupuesto m&aacute;ximo por art&iacute;culo (opcional)</label>
+            <input id="ai-budget" class="input" type="text" inputmode="decimal" placeholder="Sin l&iacute;mite" />
+            <input id="ai-limit" type="hidden" value="4" />
+          </div>
+          <div id="ai-guidance" class="ai-guidance"></div>
+          <div id="ai-results" class="recommendation-grid"></div>
+        </section>
+      </section>
+
+      <section id="inventory" class="view">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Almacén</p>
+              <h2>Inventario físico</h2>
+            </div>
+            <button id="refresh-inventory" class="secondary-button">Actualizar</button>
+          </div>
+          <div id="stock-alerts" class="alert-row"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Producto</th>
+                  <th>Categoría</th>
+                  <th>Precio</th>
+                  <th>Stock</th>
+                  <th>Accion</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="reports" class="view">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Cuadre</p>
+              <h2>Facturas y pre-facturas</h2>
+            </div>
+            <div class="panel-actions">
+              <button id="test-imecf" class="secondary-button">Probar IMECF</button>
+              <button id="open-e34-center" class="secondary-button">Emitir e-CF 34</button>
+              <button id="refresh-reports" class="secondary-button">Actualizar</button>
+            </div>
+          </div>
+          <div id="summary" class="summary-grid"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Documento</th>
+                  <th>Tipo</th>
+                  <th>Cliente</th>
+                  <th>Total</th>
+                  <th>Estado</th>
+                  <th>Fecha</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="invoice-table"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="fiscal" class="view">
+        <div class="fiscal-page-head">
+          <div>
+            <p class="eyebrow">Centro de comprobantes</p>
+            <h2>Facturación electrónica</h2>
+            <p class="section-copy">Administra el proveedor, las secuencias y el ciclo de cada documento e-CF.</p>
+          </div>
+          <button id="refresh-fiscal" class="primary-button compact">Actualizar módulo</button>
+        </div>
+
+        <div id="fiscal-health" class="fiscal-metrics"></div>
+
+        <section id="fiscal-access-note" class="fiscal-access-note">
+          <strong>Configuración protegida</strong>
+          <span>Las credenciales fiscales solo pueden ser administradas por un usuario con rol administrador.</span>
+        </section>
+
+        <section id="fiscal-admin-config" class="fiscal-admin-layout" hidden>
+          <section class="panel fiscal-config-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Acceso administrativo</p>
+                <h2 id="fiscal-config-title">Agregar empresa IMECF</h2>
+              </div>
+              <button id="cancel-fiscal-config" class="secondary-button" type="button" hidden>Cancelar edición</button>
+            </div>
+            <form id="fiscal-config-form" class="fiscal-config-form">
+              <input id="fiscal-config-id" type="hidden" />
+              <div class="form-grid">
+                <label>Espacio o empresa en IMECF<input id="config-workspace" class="input" maxlength="120" required /></label>
+                <label>Razón social fiscal<input id="config-issuer-name" class="input" maxlength="180" required /></label>
+                <label>RNC del emisor<input id="config-issuer-rnc" class="input" inputmode="numeric" maxlength="11" required /></label>
+                <label>ID de empresa IMECF<input id="config-company-id" class="input" maxlength="80" /></label>
+                <label>Ambiente
+                  <select id="config-environment" class="input">
+                    <option value="test">Test / certificación</option>
+                    <option value="production">Producción</option>
+                  </select>
+                </label>
+                <label>API Key<input id="config-api-key" class="input" type="password" autocomplete="new-password" placeholder="Dejar vacío para conservar la actual" /></label>
+              </div>
+              <label>URL base de la API<input id="config-base-url" class="input" type="url" required /></label>
+              <label>URL del portal<input id="config-portal-url" class="input" type="url" /></label>
+              <label class="check-field"><input id="config-enabled" type="checkbox" />Habilitar este perfil para facturación</label>
+              <div class="credential-confirm">
+                <label>Confirma tu contraseña administrativa<input id="config-current-password" class="input" type="password" autocomplete="current-password" required /></label>
+                <p>La credencial se cifra antes de guardarse. Después debes validar, probar y activar la empresa.</p>
+              </div>
+              <div id="fiscal-config-error" class="notice-error" hidden></div>
+              <button id="save-fiscal-config" class="primary-button" type="submit">Guardar configuración</button>
+            </form>
+          </section>
+
+          <section class="panel fiscal-companies-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Perfiles fiscales</p>
+                <h2>Empresas asignadas</h2>
+              </div>
+            </div>
+            <div id="fiscal-company-list" class="fiscal-company-list"></div>
+          </section>
+        </section>
+
+        <section class="panel fiscal-provider-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Integración</p>
+              <h2>Proveedor de facturación</h2>
+            </div>
+            <span id="provider-badge" class="badge">Local</span>
+          </div>
+          <div id="provider-details" class="provider-details"></div>
+          <div class="provider-actions">
+            <a id="open-imecf-portal" class="secondary-button" href="#" target="_blank" rel="noreferrer">Abrir portal IMECF</a>
+            <button id="validate-fiscal-issuer" class="secondary-button">Validar emisor</button>
+            <button id="fiscal-test-connection" class="secondary-button">Probar conexión</button>
+            <button id="fiscal-sync-documents" class="secondary-button">Sincronizar documentos</button>
+          </div>
+        </section>
+
+        <section class="panel fiscal-sequences-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Rangos</p>
+              <h2>Secuencias e-CF</h2>
+            </div>
+          </div>
+          <div id="fiscal-sequences" class="sequence-grid"></div>
+        </section>
+
+        <section class="panel fiscal-credit-notes-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Nota de crédito</p>
+              <h2>Emitir e-CF 34</h2>
+            </div>
+          </div>
+          <div class="credit-note-layout">
+            <form id="credit-note-form" class="credit-note-form">
+              <label>Factura electrónica original<select id="credit-source-invoice" class="input" required></select></label>
+              <label>Tipo de modificación
+                <select id="credit-modification-code" class="input">
+                  <option value="1">Anulación total</option>
+                  <option value="2">Corrección de texto</option>
+                  <option value="3">Corrección de montos</option>
+                </select>
+              </label>
+              <label>Motivo<textarea id="credit-reason" class="input" maxlength="90" rows="3" required></textarea></label>
+              <button id="issue-credit-note" class="primary-button" type="submit">Emitir E34</button>
+            </form>
+            <div id="credit-note-list" class="credit-note-list"></div>
+          </div>
+        </section>
+
+        <section class="panel fiscal-documents-panel">
+          <div class="panel-head fiscal-documents-head">
+            <div>
+              <p class="eyebrow">Historial</p>
+              <h2>Documentos electrónicos</h2>
+            </div>
+            <input id="fiscal-search" class="input" type="search" placeholder="Buscar e-NCF, cliente o estado" />
+          </div>
+          <div class="fiscal-filters" role="group" aria-label="Filtros fiscales">
+            <button class="filter-button active" data-fiscal-filter="ALL">Todos</button>
+            <button class="filter-button" data-fiscal-filter="LOCAL">Locales</button>
+            <button class="filter-button" data-fiscal-filter="ACCEPTED">Aceptados</button>
+            <button class="filter-button" data-fiscal-filter="PENDING">Pendientes</button>
+            <button class="filter-button" data-fiscal-filter="ERROR">Errores</button>
+            <button class="filter-button" data-fiscal-filter="31">e-CF 31</button>
+            <button class="filter-button" data-fiscal-filter="32">e-CF 32</button>
+            <button class="filter-button" data-fiscal-filter="34">e-CF 34</button>
+          </div>
+          <div id="fiscal-documents" class="fiscal-document-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="invoice-dialog" class="invoice-dialog">
+      <div class="dialog-head">
+        <div>
+          <p id="dialog-eyebrow" class="eyebrow">Comprobante emitido</p>
+          <h2 id="dialog-ncf">e-NCF</h2>
+        </div>
+        <button id="close-dialog" class="icon-button" title="Cerrar">&times;</button>
+      </div>
+      <div id="invoice-preview" class="invoice-preview"></div>
+      <div class="dialog-actions">
+        <a id="dgii-link" class="secondary-button" href="#" target="_blank" rel="noreferrer" hidden>Ver en DGII</a>
+        <a id="xml-link" class="secondary-button" href="#" target="_blank" rel="noreferrer">Ver XML</a>
+        <button id="issue-dialog-preinvoice" class="secondary-button compact" type="button" hidden>Emitir ahora</button>
+        <button id="print-invoice" class="primary-button compact">Imprimir</button>
+      </div>
+    </dialog>
+
+    <dialog id="payment-dialog" class="payment-dialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">Pago protegido</p>
+          <h2 id="payment-dialog-title">Cobrar venta</h2>
+        </div>
+        <button id="close-payment-dialog" class="icon-button" type="button" title="Cerrar">&times;</button>
+      </div>
+      <p id="payment-conversion" class="payment-conversion"></p>
+      <form id="paypal-simulated-portal" class="simulated-payment-portal paypal-login-portal">
+        <div class="paypal-logo-block" aria-label="PayPal">
+          <div class="paypal-logo-mark">P</div>
+          <strong>PayPal</strong>
+        </div>
+        <p class="paypal-copy">Inicia sesion en PayPal para autorizar el pago.</p>
+        <label>Correo de PayPal<input id="paypal-email" class="input" type="email" autocomplete="email" placeholder="cliente@paypal.com" /></label>
+        <label>Contrasena<input id="paypal-password" class="input" type="password" autocomplete="current-password" placeholder="Contrasena" /></label>
+        <button id="paypal-login-submit" class="paypal-login-button" type="submit">Iniciar sesion y pagar</button>
+        <button id="paypal-simulate-pay" class="secondary-button" type="button">Confirmar sin login</button>
+        <div id="paypal-payment-error" class="notice-error" hidden></div>
+        <span class="paypal-demo-note">Conexion protegida. Tus datos no se almacenan en este sistema.</span>
+      </form>
+      <form id="card-simulated-portal" class="simulated-payment-portal card-payment-form">
+        <div class="card-portal-head">
+          <div class="portal-brand">
+            <strong>Tarjeta de credito/debito</strong>
+            <span>Pago seguro con validación de tarjeta.</span>
+          </div>
+          <div class="card-brand-strip" aria-label="Marcas aceptadas">
+            <span id="visa-brand" class="card-brand visa">VISA</span>
+            <span id="mastercard-brand" class="card-brand mastercard"><span></span><span></span><strong>Mastercard</strong></span>
+          </div>
+        </div>
+        <label>Nombre en la tarjeta<input id="sim-card-name" class="input" autocomplete="cc-name" /></label>
+        <label>Numero de tarjeta<input id="sim-card-number" class="input" inputmode="numeric" maxlength="19" placeholder="4111 1111 1111 1111" /></label>
+        <div class="card-field-row">
+          <label>Vence<input id="sim-card-expiry" class="input" maxlength="5" placeholder="MM/AA" /></label>
+          <label>CVV<input id="sim-card-cvv" class="input" inputmode="numeric" maxlength="4" placeholder="123" /></label>
+        </div>
+        <button id="card-simulate-pay" class="primary-button" type="submit">Confirmar pago con tarjeta</button>
+        <div id="card-payment-error" class="notice-error" hidden></div>
+      </form>
+      <div id="paypal-not-configured" class="payment-warning" hidden>
+        PayPal Sandbox todavía no tiene credenciales. Agrega el Client ID y Secret para habilitar cobros.
+      </div>
+      <div id="paypal-button-container"></div>
+      <div id="card-field-container" class="card-field-container">
+        <div id="card-name-field-container" class="hosted-card-field"></div>
+        <div id="card-number-field-container" class="hosted-card-field"></div>
+        <div class="card-field-row">
+          <div id="card-expiry-field-container" class="hosted-card-field"></div>
+          <div id="card-cvv-field-container" class="hosted-card-field"></div>
+        </div>
+        <button id="card-field-submit" class="primary-button" type="button">Pagar con tarjeta</button>
+      </div>
+      <p class="payment-security">Los datos del pago se validan antes de emitir el comprobante.</p>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js?v=20260718-ai-smart3"></script>
+  </body>
+</html>

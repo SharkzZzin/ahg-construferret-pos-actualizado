@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Iniciar sesión | AHG CONSTRUFERRET</title>
+    <link rel="stylesheet" href="/static/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-brand">
+        <div class="brand-mark">AHG</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Sistema comercial inteligente</p>
+          <h1>AHG CONSTRUFERRET</h1>
+          <p class="lead">Ventas, inventario, asesoría técnica y facturación electrónica en un solo lugar.</p>
+          <ul>
+            <li>Operación protegida por usuario</li>
+            <li>Comprobantes e-CF y seguimiento fiscal</li>
+            <li>Inventario actualizado con cada venta</li>
+          </ul>
+        </div>
+        <p class="copyright">Proyecto Integrador UTESA</p>
+      </section>
+
+      <section class="login-form-panel">
+        <form id="login-form" class="login-card">
+          <div class="login-icon">✓</div>
+          <p class="eyebrow">Acceso seguro</p>
+          <h2>Bienvenido de nuevo</h2>
+          <p class="helper">Ingresa con tu correo electrónico o teléfono.</p>
+
+          <label>
+            Correo o teléfono
+            <input id="identifier" name="identifier" type="text" autocomplete="username" required />
+          </label>
+          <label>
+            Contraseña
+            <div class="password-wrap">
+              <input id="password" name="password" type="password" autocomplete="current-password" minlength="6" required />
+              <button id="toggle-password" type="button" aria-label="Mostrar contraseña">Ver</button>
+            </div>
+          </label>
+
+          <p id="login-error" class="login-error" role="alert"></p>
+          <button id="login-button" class="login-button" type="submit">Acceder</button>
+
+          <div class="demo-hint">
+            <strong>Acceso inicial</strong>
+            <span>admin@ahg.local · Cambiar123!</span>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script src="/static/login.js"></script>
+  </body>
+</html>
