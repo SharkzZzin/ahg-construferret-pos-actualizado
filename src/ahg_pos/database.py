@@ -153,11 +153,78 @@ class Database:
         self.conn.commit()
         self.ensure_product_columns()
         self.ensure_billing_columns()
+        self.ensure_tracking_table()
+        self.ensure_public_quote_request_table()
         if self.scalar("SELECT COUNT(*) FROM products") == 0:
             self.seed_demo_data()
         self.ensure_reference_data()
         self.ensure_initial_admin()
         self.ensure_initial_fiscal_company()
+
+    def ensure_tracking_table(self) -> None:
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_tracking_tokens (
+                invoice_id INTEGER PRIMARY KEY REFERENCES invoices(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            )
+            """
+        )
+        self.conn.commit()
+
+    def ensure_public_quote_request_table(self) -> None:
+        if self.kind == "sqlite":
+            self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public_quote_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    email TEXT NOT NULL DEFAULT '',
+                    problem TEXT NOT NULL,
+                    items_json TEXT NOT NULL,
+                    subtotal REAL NOT NULL DEFAULT 0,
+                    tax REAL NOT NULL DEFAULT 0,
+                    total REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pendiente',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        else:
+            self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public_quote_requests (
+                    id SERIAL PRIMARY KEY,
+                    customer_name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    email TEXT NOT NULL DEFAULT '',
+                    problem TEXT NOT NULL,
+                    items_json TEXT NOT NULL,
+                    subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+                    tax NUMERIC(12,2) NOT NULL DEFAULT 0,
+                    total NUMERIC(12,2) NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pendiente',
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+        existing = self._column_names("public_quote_requests")
+        columns = {
+            "ecf_type": "TEXT NOT NULL DEFAULT '32'",
+            "rnc_cedula": "TEXT NOT NULL DEFAULT ''",
+            "address": "TEXT NOT NULL DEFAULT ''",
+            "taxpayer_name": "TEXT NOT NULL DEFAULT ''",
+            "taxpayer_activity": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                self.execute(f"ALTER TABLE public_quote_requests ADD COLUMN {name} {definition}")
+        self.conn.commit()
 
     def ensure_product_columns(self) -> None:
         columns = {
@@ -492,6 +559,8 @@ class Database:
                 ("32", "Factura de Consumo Electronica", "E32", 1, 9999999999, "2026-12-31", 1),
             ]
             for row in sequences:
+                # SQLite acepta 0/1, pero PostgreSQL requiere booleanos.
+                sequence_row = (*row[:-1], True if self.kind == "postgres" else row[-1])
                 self.execute(
                     """
                     INSERT INTO fiscal_sequences(
@@ -501,7 +570,7 @@ class Database:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(type_code) DO NOTHING
                     """,
-                    row,
+                    sequence_row,
                 )
             self.conn.commit()
         except Exception:
@@ -883,6 +952,35 @@ class Database:
             """
         )
 
+    def list_products_page(self, query: str = "", page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        terms = [term.strip().lower() for term in str(query or "").split() if term.strip()]
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        for term in terms:
+            clauses.append(
+                "LOWER(p.id || ' ' || p.sku || ' ' || p.barcode || ' ' || p.brand || ' ' || p.name || ' ' || p.technical_description || ' ' || p.tags) LIKE ?"
+            )
+            params.append(f"%{term}%")
+        where = " AND ".join(clauses)
+        total = int(self.scalar(f"SELECT COUNT(*) FROM products p WHERE {where}", tuple(params)) or 0)
+        rows = self.fetch_all(
+            f"""
+            SELECT p.id, p.sku, p.name, p.technical_description, p.price,
+                   p.barcode, p.brand, p.unit_name, p.location, p.supplier,
+                   p.cost, p.tax_rate, p.stock, p.min_stock, p.tags,
+                   p.active, p.created_at, p.updated_at, c.id AS category_id,
+                   c.name AS category
+            FROM products p
+            JOIN categories c ON c.id = p.category_id
+            WHERE {where}
+            ORDER BY c.name, p.name
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [limit, (page - 1) * limit]),
+        )
+        return self.page_result(rows, total, page, limit)
+
     def list_categories(self) -> list[dict[str, Any]]:
         return self.fetch_all(
             """
@@ -1038,6 +1136,29 @@ class Database:
             client["credit_balance"] = self.client_credit_balance(int(client["id"]))
         return rows
 
+    def list_clients_page(self, query: str = "", page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        term = str(query or "").strip().lower()
+        active_value = True if self.kind == "postgres" else 1
+        params: tuple[Any, ...] = (active_value,)
+        where = "active = ?"
+        if term:
+            where += " AND LOWER(name || ' ' || COALESCE(fiscal_id, '') || ' ' || phone || ' ' || email) LIKE ?"
+            params += (f"%{term}%",)
+        total = int(self.scalar(f"SELECT COUNT(*) FROM clients WHERE {where}", params) or 0)
+        rows = self.fetch_all(
+            f"""
+            SELECT id, name, COALESCE(fiscal_id, '') AS rnc_cedula, phone, email,
+                   address, taxpayer_activity, dgii_locked, notes, active, created_at,
+                   0 AS credit_balance
+            FROM clients WHERE {where} ORDER BY name LIMIT ? OFFSET ?
+            """,
+            params + (limit, (page - 1) * limit),
+        )
+        for client in rows:
+            client["credit_balance"] = self.client_credit_balance(int(client["id"]))
+        return self.page_result(rows, total, page, limit)
+
     def save_client(self, payload: dict[str, Any], client_id: int | None = None) -> dict[str, Any]:
         party = normalize_party_payload(payload, "cliente")
         existing = self.fetch_one("SELECT * FROM clients WHERE id = ?", (client_id,)) if client_id else None
@@ -1177,6 +1298,26 @@ class Database:
             """
         )
 
+    def list_suppliers_page(self, query: str = "", page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        term = str(query or "").strip().lower()
+        active_value = True if self.kind == "postgres" else 1
+        params: tuple[Any, ...] = (active_value,)
+        where = "active = ?"
+        if term:
+            where += " AND LOWER(name || ' ' || rnc_cedula || ' ' || phone || ' ' || email) LIKE ?"
+            params += (f"%{term}%",)
+        total = int(self.scalar(f"SELECT COUNT(*) FROM suppliers WHERE {where}", params) or 0)
+        rows = self.fetch_all(
+            f"""
+            SELECT id, name, rnc_cedula, phone, email, address, contact_person,
+                   taxpayer_activity, dgii_locked, notes, active, created_at, updated_at
+            FROM suppliers WHERE {where} ORDER BY name LIMIT ? OFFSET ?
+            """,
+            params + (limit, (page - 1) * limit),
+        )
+        return self.page_result(rows, total, page, limit)
+
     def save_supplier(self, payload: dict[str, Any], supplier_id: int | None = None) -> dict[str, Any]:
         party = normalize_party_payload(payload, "proveedor")
         contact_person = "".join(ch for ch in str(payload.get("contact_person", "")) if ch.isdigit())
@@ -1250,6 +1391,55 @@ class Database:
         self.execute("UPDATE suppliers SET active = 0, updated_at = ? WHERE id = ?", (self.now(), supplier_id))
         self.conn.commit()
 
+    def save_public_quote_request(
+        self,
+        customer_name: str,
+        phone: str,
+        email: str,
+        problem: str,
+        quote: dict[str, Any],
+        fiscal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        fiscal = fiscal or {}
+        now = self.now()
+        self.execute(
+            """
+            INSERT INTO public_quote_requests(
+                customer_name, phone, email, problem, items_json,
+                subtotal, tax, total, status, created_at, updated_at,
+                ecf_type, rnc_cedula, address, taxpayer_name, taxpayer_activity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pendiente', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                customer_name.strip(), phone.strip(), email.strip().lower(), problem.strip(),
+                json.dumps(quote.get("lines", []), ensure_ascii=False),
+                quote.get("subtotal", 0), quote.get("tax", 0), quote.get("total", 0), now, now,
+                str(fiscal.get("ecf_type", "32")), str(fiscal.get("rnc_cedula", "")),
+                str(fiscal.get("address", "")), str(fiscal.get("taxpayer_name", "")),
+                str(fiscal.get("taxpayer_activity", "")),
+            ),
+        )
+        self.conn.commit()
+        request_id = self.last_insert_id()
+        return self.get_public_quote_request(request_id)
+
+    def get_public_quote_request(self, request_id: int) -> dict[str, Any]:
+        row = self.fetch_one("SELECT * FROM public_quote_requests WHERE id = ?", (request_id,))
+        if not row:
+            raise DatabaseError("Solicitud de cotización no encontrada.")
+        result = dict(row)
+        result["items"] = json.loads(result.pop("items_json") or "[]")
+        return result
+
+    def list_public_quote_requests(self) -> list[dict[str, Any]]:
+        rows = self.fetch_all("SELECT * FROM public_quote_requests ORDER BY id DESC LIMIT 100")
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["items"] = json.loads(item.pop("items_json") or "[]")
+            result.append(item)
+        return result
+
     def list_preinvoices(self) -> list[dict[str, Any]]:
         rows = self.fetch_all(
             """
@@ -1264,6 +1454,22 @@ class Database:
             """
         )
         return rows
+
+    def list_preinvoices_page(self, page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        total = int(self.scalar("SELECT COUNT(*) FROM preinvoices") or 0)
+        rows = self.fetch_all(
+            """
+            SELECT p.*, COALESCE(c.name, 'Sin cliente') AS client_name,
+                   COALESCE(c.fiscal_id, '') AS rnc_cedula,
+                   COALESCE(c.phone, '') AS phone, COALESCE(c.email, '') AS email,
+                   COALESCE(c.address, '') AS address
+            FROM preinvoices p LEFT JOIN clients c ON c.id = p.client_id
+            ORDER BY p.id DESC LIMIT ? OFFSET ?
+            """,
+            (limit, (page - 1) * limit),
+        )
+        return self.page_result(rows, total, page, limit)
 
     def get_preinvoice(self, preinvoice_id: int) -> dict[str, Any]:
         draft = self.fetch_one(
@@ -1508,6 +1714,23 @@ class Database:
             """
         )
 
+    def list_credit_notes_page(self, page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        total = int(self.scalar("SELECT COUNT(*) FROM credit_notes") or 0)
+        rows = self.fetch_all(
+            """
+            SELECT cn.id, cn.source_invoice_id, cn.en_ncf, cn.provider_encf,
+                   cn.modification_code, cn.reason, cn.total, cn.status,
+                   cn.api_status, cn.api_error, cn.track_id, cn.provider_document_id, cn.issued_at,
+                   COALESCE(api.encf, i.en_ncf) AS source_encf
+            FROM credit_notes cn JOIN invoices i ON i.id = cn.source_invoice_id
+            LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
+            ORDER BY cn.id DESC LIMIT ? OFFSET ?
+            """,
+            (limit, (page - 1) * limit),
+        )
+        return self.page_result(rows, total, page, limit)
+
     def save_credit_note_api_result(
         self,
         note_id: int,
@@ -1582,6 +1805,35 @@ class Database:
             """,
             (limit,),
         )
+
+    def recent_invoices_page(self, query: str = "", page: int = 1, limit: int = 25) -> dict[str, Any]:
+        page, limit = self.normalize_page(page, limit)
+        term = str(query or "").strip().lower()
+        params: tuple[Any, ...] = ()
+        where = "1 = 1"
+        if term:
+            where += " AND LOWER(i.en_ncf || ' ' || COALESCE(c.name, '') || ' ' || COALESCE(c.fiscal_id, '')) LIKE ?"
+            params = (f"%{term}%",)
+        total = int(self.scalar(
+            f"SELECT COUNT(*) FROM invoices i LEFT JOIN clients c ON c.id = i.client_id WHERE {where}", params
+        ) or 0)
+        rows = self.fetch_all(
+            f"""
+            SELECT i.id, i.en_ncf, i.ecf_type, i.subtotal, i.discount_total, i.credit_applied, i.tax, i.total,
+                   i.status, i.payment_method, i.issued_at,
+                   COALESCE(c.name, 'Consumidor Final') AS client_name,
+                   COALESCE(c.fiscal_id, '') AS rnc_cedula,
+                   COALESCE(api.provider_document_id, '') AS provider_document_id,
+                   COALESCE(api.track_id, '') AS track_id, COALESCE(api.encf, '') AS provider_encf,
+                   COALESCE(api.api_status, '') AS api_status, COALESCE(api.last_error, '') AS api_error,
+                   COALESCE(api.response_json, '') AS provider_response_json
+            FROM invoices i LEFT JOIN clients c ON c.id = i.client_id
+            LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
+            WHERE {where} ORDER BY i.id DESC LIMIT ? OFFSET ?
+            """,
+            params + (limit, (page - 1) * limit),
+        )
+        return self.page_result(rows, total, page, limit)
 
     def daily_summary(self) -> list[dict[str, Any]]:
         return self.fetch_all(
@@ -1785,7 +2037,15 @@ class Database:
                 (invoice_id, payable_total, payment_method, issued_at),
             )
             self.conn.commit()
-            return self.get_invoice(invoice_id)
+            tracking_token = secrets.token_urlsafe(32)
+            self.execute(
+                "INSERT INTO invoice_tracking_tokens(invoice_id, token_hash, created_at) VALUES (?, ?, ?)",
+                (invoice_id, token_hash(tracking_token), issued_at),
+            )
+            self.conn.commit()
+            invoice = self.get_invoice(invoice_id)
+            invoice["tracking_token"] = tracking_token
+            return invoice
         except Exception:
             self.conn.rollback()
             raise
@@ -1825,6 +2085,33 @@ class Database:
             (invoice_id,),
         )
         return invoice
+
+    def track_invoice_by_token(self, token: str) -> dict[str, Any]:
+        token = str(token or "").strip()
+        if len(token) < 20:
+            raise DatabaseError("Token de seguimiento inválido.")
+        row = self.fetch_one(
+            """
+            SELECT i.id, i.en_ncf, i.ecf_type, i.total, i.status, i.issued_at,
+                   COALESCE(api.provider_encf, '') AS provider_encf,
+                   COALESCE(api.track_id, '') AS track_id,
+                   COALESCE(api.api_status, '') AS api_status,
+                   COALESCE(api.last_error, '') AS api_error
+            FROM invoice_tracking_tokens t
+            JOIN invoices i ON i.id = t.invoice_id
+            LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
+            WHERE t.token_hash = ?
+            """,
+            (token_hash(token),),
+        )
+        if not row:
+            raise DatabaseError("Token de seguimiento no encontrado.")
+        self.execute(
+            "UPDATE invoice_tracking_tokens SET last_used_at = ? WHERE token_hash = ?",
+            (self.now(), token_hash(token)),
+        )
+        self.conn.commit()
+        return row
 
     def update_invoice_xml(self, invoice_id: int, xml_text: str) -> None:
         self.execute("UPDATE invoices SET xml_text = ? WHERE id = ?", (xml_text, invoice_id))
@@ -1923,6 +2210,30 @@ class Database:
         cursor = self.execute(sql, params)
         return [self._clean_row(row) for row in cursor.fetchall()]
 
+    @staticmethod
+    def normalize_page(page: int | str = 1, limit: int | str = 25) -> tuple[int, int]:
+        try:
+            page_value = max(1, int(page))
+        except (TypeError, ValueError):
+            page_value = 1
+        try:
+            limit_value = min(100, max(1, int(limit)))
+        except (TypeError, ValueError):
+            limit_value = 25
+        return page_value, limit_value
+
+    @staticmethod
+    def page_result(rows: list[dict[str, Any]], total: int, page: int, limit: int) -> dict[str, Any]:
+        return {
+            "items": rows,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "pages": max(1, (total + limit - 1) // limit),
+            "has_next": page * limit < total,
+            "has_previous": page > 1,
+        }
+
     def scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         cursor = self.execute(sql, params)
         row = cursor.fetchone()
@@ -1992,7 +2303,10 @@ class Database:
 
     def _sql(self, sql: str) -> str:
         if self.kind == "postgres":
-            return sql.replace("?", "%s").replace("authorized = 1", "authorized = TRUE")
+            # Psycopg interpreta '%' como marcador de parámetros. Escapar los
+            # porcentajes literales de LIKE antes de convertir los placeholders
+            # estilo SQLite evita errores como "got %R" en PostgreSQL.
+            return sql.replace("%", "%%").replace("?", "%s").replace("authorized = 1", "authorized = TRUE")
         return sql
 
     def _clean_row(self, row: Any) -> dict[str, Any]:

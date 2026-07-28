@@ -20,6 +20,13 @@ const state = {
   paypalPayment: null,
   paypalSdkPromise: null,
   fiscalIssuer: {},
+  productPagination: null,
+  masterProductPagination: null,
+  preinvoicePagination: null,
+  invoicePagination: null,
+  clientPagination: null,
+  supplierPagination: null,
+  webRequests: [],
 };
 
 const money = new Intl.NumberFormat("es-DO", {
@@ -30,8 +37,10 @@ const money = new Intl.NumberFormat("es-DO", {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+const setLoading = (visible) => $("#loading-screen")?.classList.toggle("is-hidden", !visible);
 
 document.addEventListener("DOMContentLoaded", async () => {
+  enhanceUi();
   bindTabs();
   bindSale();
   bindProductMaster();
@@ -39,11 +48,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindSuppliers();
   bindPreinvoices();
   bindAssistant();
+  bindWebRequests();
   bindInventory();
   bindFiscal();
   bindReports();
   bindDialog();
-  await boot();
+  try {
+    await boot();
+  } finally {
+    setLoading(false);
+  }
 });
 
 async function boot() {
@@ -61,6 +75,8 @@ async function boot() {
   await refreshClients();
   await refreshSuppliers();
   await refreshPreinvoices();
+  await refreshWebRequests();
+  decorateWebRequests();
   await refreshReports();
   await refreshFiscal();
 }
@@ -90,7 +106,16 @@ function bindTabs() {
 
 function setView(view) {
   $$(".tab").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $$(".view").forEach((section) => section.classList.toggle("active", section.id === view));
+  $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.view === view)));
+  $$(".view").forEach((section) => {
+    const active = section.id === view;
+    section.classList.toggle("active", active);
+    if (active) {
+      section.classList.remove("view-enter");
+      requestAnimationFrame(() => section.classList.add("view-enter"));
+    }
+  });
+  document.body.dataset.view = view;
   if (view === "fiscal") refreshFiscal();
   if (view === "products") refreshProductMaster();
   if (view === "clients") refreshClients();
@@ -98,23 +123,153 @@ function setView(view) {
   if (view === "preinvoices") refreshPreinvoices();
 }
 
+function enhanceUi() {
+  document.body.dataset.view = "sale";
+  $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.classList.contains("active"))));
+  createCommandPalette();
+
+  document.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      toggleCommandPalette(true);
+      return;
+    }
+    if (event.key === "Escape") {
+      toggleCommandPalette(false);
+      return;
+    }
+    if (event.key === "/" && !editing) {
+      event.preventDefault();
+      const search = document.body.dataset.view === "products" ? $("#master-search") : $("#product-search");
+      search?.focus();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.("button");
+    if (!button || button.disabled) return;
+    button.classList.remove("click-pulse");
+    requestAnimationFrame(() => button.classList.add("click-pulse"));
+  });
+}
+
+function createCommandPalette() {
+  if ($("#command-palette")) return;
+  const palette = document.createElement("div");
+  palette.id = "command-palette";
+  palette.className = "command-palette";
+  palette.hidden = true;
+  palette.innerHTML = `
+    <div class="command-backdrop" data-command-close></div>
+    <section class="command-dialog" role="dialog" aria-modal="true" aria-labelledby="command-title">
+      <div class="command-head"><div><span class="eyebrow">Acciones rápidas</span><h2 id="command-title">¿Qué deseas hacer?</h2></div><kbd>ESC</kbd></div>
+      <div class="command-search-wrap"><span>⌘</span><input id="command-search" type="search" placeholder="Buscar módulo o acción..." autocomplete="off" /></div>
+      <div id="command-list" class="command-list"></div>
+    </section>`;
+  document.body.appendChild(palette);
+  const actions = [
+    ["Nueva venta", "Abrir el mostrador", "sale", "Venta"],
+    ["Buscar productos", "Ir al maestro de artículos", "products", "Maestro de artículos"],
+    ["Consultar IA", "Buscar una recomendación técnica", "assistant", "Asistente IA"],
+    ["Revisar pre-facturas", "Gestionar ventas pendientes", "preinvoices", "Pre-Facturas"],
+    ["Consultar inventario", "Actualizar existencias", "inventory", "Inventario"],
+    ["Gestión fiscal", "Revisar IMECF y documentos", "fiscal", "Gestión Fiscal"],
+  ];
+  const render = (term = "") => {
+    const needle = normalize(term);
+    $("#command-list").innerHTML = actions
+      .filter((item) => normalize(item.join(" ")).includes(needle))
+      .map(([title, description, view, label]) => `<button class="command-item" type="button" data-command-view="${view}"><span class="command-icon">${label.slice(0, 1)}</span><span><strong>${title}</strong><small>${description}</small></span><kbd>↵</kbd></button>`)
+      .join("") || `<p class="command-empty">No encontramos esa acción.</p>`;
+    $$("[data-command-view]").forEach((button) => button.addEventListener("click", () => { setView(button.dataset.commandView); toggleCommandPalette(false); }));
+  };
+  render();
+  $("#command-search").addEventListener("input", (event) => render(event.target.value));
+  palette.addEventListener("click", (event) => { if (event.target.closest("[data-command-close]")) toggleCommandPalette(false); });
+}
+
+function toggleCommandPalette(open) {
+  const palette = $("#command-palette");
+  if (!palette) return;
+  palette.hidden = !open;
+  if (open) { $("#command-search").value = ""; $("#command-search").focus(); }
+}
+
+function bindWebRequests() {
+  $("#refresh-web-requests").addEventListener("click", refreshWebRequests);
+}
+
+async function refreshWebRequests() {
+  const payload = await api("/api/public/quote-requests");
+  state.webRequests = payload.requests || [];
+  $("#web-request-list").innerHTML = state.webRequests.map((request) => `
+    <article class="preinvoice-card">
+      <div><div class="document-title"><strong>Solicitud #${request.id} · ${escapeHtml(request.customer_name)}</strong><span class="badge warning">${escapeHtml(request.status)}</span></div>
+      <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Problema:</strong> ${escapeHtml(request.problem)}</p>
+      <span>${request.items.length} artículos · ${formatDate(request.created_at)}</span></div>
+      <div><strong>${money.format(request.total)}</strong><br/><small>${request.items.map((item) => `${escapeHtml(item.name)} x${item.quantity}`).join(", ")}</small></div>
+    </article>`).join("") || `<div class="empty-state">No hay solicitudes del catálogo.</div>`;
+}
+
+function decorateWebRequests() {
+  $("#web-request-list").querySelectorAll(".preinvoice-card").forEach((card, index) => {
+    const request = state.webRequests[index];
+    if (!request || card.querySelector("[data-load-web-request]")) return;
+    const button = document.createElement("button");
+    button.className = "primary-button compact";
+    button.textContent = "Cargar en ventas";
+    button.dataset.loadWebRequest = request.id;
+    button.addEventListener("click", () => loadWebRequest(request.id));
+    card.lastElementChild?.appendChild(button);
+  });
+}
+
+async function loadWebRequest(requestId) {
+  const request = state.webRequests.find((item) => Number(item.id) === Number(requestId));
+  if (!request) return;
+  const products = await api("/api/products?page=1&limit=100");
+  state.cart = [];
+  for (const item of request.items || []) {
+    const product = (products.products || []).find((row) => String(row.id) === String(item.product_id));
+    if (product) state.cart.push({ product_id: product.id, name: product.name, unit_price: Number(item.unit_price || product.price), discount_percent: 0, tax_rate: Number(product.tax_rate), stock: Number(product.stock), quantity: Number(item.quantity || 1) });
+  }
+  state.ecfType = String(request.ecf_type || "32");
+  $("#client-rnc").value = formatFiscalId(request.rnc_cedula || "");
+  $("#client-name").value = request.taxpayer_name || request.customer_name || "";
+  $("#client-phone").value = request.phone || "";
+  $("#client-email").value = request.email || "";
+  $("#client-address").value = request.address || "";
+  renderCart();
+  setView("sale");
+  toast(`Solicitud #${request.id} cargada en Ventas.`);
+}
+
 function bindProductMaster() {
   $("#product-form").addEventListener("submit", saveProduct);
-  $("#master-search").addEventListener("input", renderProductMaster);
+  let searchTimer;
+  $("#master-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => refreshProductMaster(1), 250);
+  });
   $("#cancel-product-edit").addEventListener("click", resetProductForm);
 }
 
-async function refreshProductMaster() {
+async function refreshProductMaster(page = 1) {
+  const query = $("#master-search").value.trim();
   const [productsPayload, categoriesPayload] = await Promise.all([
-    api("/api/products"),
+    api(`/api/products?page=${page}&limit=25&q=${encodeURIComponent(query)}`),
     api("/api/categories"),
   ]);
   state.products = productsPayload.products || [];
+  state.masterProductPagination = productsPayload.pagination || null;
   state.categories = categoriesPayload.categories || [];
   $("#category-options").innerHTML = state.categories
     .map((category) => `<option value="${escapeHtml(category.name)}"></option>`)
     .join("");
   renderProductMaster();
+  renderPager("product-master-table", state.masterProductPagination, (nextPage) => refreshProductMaster(nextPage));
 }
 
 function renderProductMaster() {
@@ -236,20 +391,27 @@ async function saveProduct(event) {
 
 function bindClients() {
   $("#client-form").addEventListener("submit", saveClient);
-  $("#client-search").addEventListener("input", renderClients);
+  let searchTimer;
+  $("#client-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => refreshClients(1), 250);
+  });
   $("#cancel-client-edit").addEventListener("click", resetClientForm);
   $("#lookup-customer")?.addEventListener("click", () => lookupParty("customer"));
   bindPartyInputs("customer");
 }
 
-async function refreshClients() {
-  const payload = await api("/api/clients");
+async function refreshClients(page = 1) {
+  const query = $("#client-search").value.trim();
+  const payload = await api(`/api/clients?page=${page}&limit=25&q=${encodeURIComponent(query)}`);
   state.clients = payload.clients || [];
+  state.clientPagination = payload.pagination || null;
   $("#client-select").innerHTML = `
     <option value="">Consumidor final / nuevo cliente</option>
     ${state.clients.filter((client) => client.active).map((client) => `<option value="${client.id}">${escapeHtml(client.name)}${client.rnc_cedula ? ` · ${escapeHtml(formatFiscalId(client.rnc_cedula))}` : ""}</option>`).join("")}
   `;
   renderClients();
+  renderPager("client-list", state.clientPagination, (nextPage) => refreshClients(nextPage));
 }
 
 function renderClients() {
@@ -358,16 +520,23 @@ async function deleteClient(clientId) {
 
 function bindSuppliers() {
   $("#supplier-form")?.addEventListener("submit", saveSupplier);
-  $("#supplier-search")?.addEventListener("input", renderSuppliers);
+  let searchTimer;
+  $("#supplier-search")?.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => refreshSuppliers(1), 250);
+  });
   $("#cancel-supplier-edit")?.addEventListener("click", resetSupplierForm);
   $("#lookup-supplier")?.addEventListener("click", () => lookupParty("supplier"));
   bindPartyInputs("supplier");
 }
 
-async function refreshSuppliers() {
-  const payload = await api("/api/suppliers");
+async function refreshSuppliers(page = 1) {
+  const query = $("#supplier-search").value.trim();
+  const payload = await api(`/api/suppliers?page=${page}&limit=25&q=${encodeURIComponent(query)}`);
   state.suppliers = payload.suppliers || [];
+  state.supplierPagination = payload.pagination || null;
   renderSuppliers();
+  renderPager("supplier-list", state.supplierPagination, (nextPage) => refreshSuppliers(nextPage));
 }
 
 function renderSuppliers() {
@@ -492,10 +661,12 @@ function bindPreinvoices() {
   $("#refresh-preinvoices").addEventListener("click", refreshPreinvoices);
 }
 
-async function refreshPreinvoices() {
-  const payload = await api("/api/preinvoices");
+async function refreshPreinvoices(page = 1) {
+  const payload = await api(`/api/preinvoices?page=${page}&limit=25`);
   state.preinvoices = payload.preinvoices || [];
+  state.preinvoicePagination = payload.pagination || null;
   renderPreinvoices();
+  renderPager("preinvoice-list", state.preinvoicePagination, (nextPage) => refreshPreinvoices(nextPage));
 }
 
 function renderPreinvoices() {
@@ -552,7 +723,11 @@ async function issuePreinvoice(preinvoiceId) {
 }
 
 function bindSale() {
-  $("#product-search").addEventListener("input", () => renderProducts());
+  let searchTimer;
+  $("#product-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => refreshProducts(1), 250);
+  });
   $("#clear-cart").addEventListener("click", () => {
     state.cart = [];
     state.currentPreinvoiceId = null;
@@ -1287,34 +1462,58 @@ function bindDialog() {
   });
 }
 
-async function refreshProducts() {
-  const payload = await api("/api/products");
-  state.products = payload.products;
+async function refreshProducts(page = 1) {
+  const query = $("#product-search").value.trim();
+  const payload = await api(`/api/products?page=${page}&limit=25&q=${encodeURIComponent(query)}`);
+  state.products = payload.products || [];
+  state.productPagination = payload.pagination || null;
   renderProducts();
   renderInventory();
+  renderPager("product-list", state.productPagination, (nextPage) => refreshProducts(nextPage));
 }
 
 async function refreshReports() {
-  const payload = await api("/api/invoices");
+  await refreshInvoicePage(1);
+}
+
+async function refreshInvoicePage(page = 1) {
+  const payload = await api(`/api/invoices?page=${page}&limit=25`);
   state.invoices = payload.invoices || [];
+  state.invoicePagination = payload.pagination || null;
   renderReports(payload.invoices, payload.summary);
   renderCreditNotes();
+  renderPager("invoice-table", state.invoicePagination, (nextPage) => refreshInvoicePage(nextPage));
 }
 
 function renderProducts() {
-  const query = normalize($("#product-search").value);
-  const terms = query.split(" ").filter(Boolean);
   const list = $("#product-list");
   const rows = state.products.filter((product) => {
     if (!product.active) return false;
-    if (!terms.length) return true;
-    const haystack = normalize(`${product.id} ${product.sku} ${product.barcode || ""} ${product.brand || ""} ${product.name} ${product.category} ${product.location || ""} ${product.supplier || ""} ${product.technical_description} ${product.tags}`);
-    return terms.every((term) => haystack.includes(term));
+    return true;
   });
   list.innerHTML = rows.map(productRow).join("") || `<div class="empty-state">Sin coincidencias</div>`;
   list.querySelectorAll("[data-add]").forEach((button) => {
     button.addEventListener("click", () => addToCart(button.dataset.add));
   });
+}
+
+function renderPager(targetId, pagination, onPage) {
+  const target = document.getElementById(targetId);
+  if (!target || !pagination) return;
+  let pager = document.getElementById(`${targetId}-pagination`) || target.parentElement.querySelector(`[data-pager-for="${targetId}"]`);
+  if (!pager) {
+    pager = document.createElement("div");
+    pager.dataset.pagerFor = targetId;
+    pager.className = "pagination-controls";
+    target.parentElement.appendChild(pager);
+  }
+  pager.innerHTML = `
+    <button class="secondary-button compact" ${pagination.has_previous ? "" : "disabled"} data-page-prev>Anterior</button>
+    <span>Página ${pagination.page} de ${pagination.pages} · ${pagination.total} registros</span>
+    <button class="secondary-button compact" ${pagination.has_next ? "" : "disabled"} data-page-next>Siguiente</button>
+  `;
+  pager.querySelector("[data-page-prev]")?.addEventListener("click", () => onPage(pagination.page - 1));
+  pager.querySelector("[data-page-next]")?.addEventListener("click", () => onPage(pagination.page + 1));
 }
 
 function productRow(product) {
@@ -1977,6 +2176,9 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
   const qrData = [encf, issuer.rnc, invoice.rnc_cedula, Number(invoice.total || 0).toFixed(2), invoice.security_code].join("|");
   const items = invoice.items || [];
   const paymentLabel = paymentLabelFor(invoice.payment_method);
+  const trackingUrl = invoice.tracking_token
+    ? `${window.location.origin}/api/public/tracking/${encodeURIComponent(invoice.tracking_token)}`
+    : "";
   const statusLine = invoice.provider_document_id
     ? `IMECF: ${escapeHtml(invoice.api_status || "Enviado")}`
     : "Modo: Comprobante local";
@@ -2067,6 +2269,7 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
       </div>
 
       <div class="aux-status-line">${escapeHtml(statusLine)}</div>
+      ${trackingUrl ? `<div class="aux-status-line">Token de seguimiento: <a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noreferrer">Consultar estado remoto</a></div>` : ""}
       ${warning ? `<p class="notice-error aux-warning">${escapeHtml(warning)}</p>` : ""}
     </section>
   `;

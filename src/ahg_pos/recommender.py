@@ -183,6 +183,34 @@ def normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9/ ]+", " ", value)
 
 
+def required_filter_questions(query: str) -> list[str]:
+    """Return mandatory questions before recommending a product by assumption."""
+    normalized = normalize(query)
+    questions: list[str] = []
+
+    is_pipe = any(term in normalized for term in ("tubo", "tuberia", "pvc", "cpvc", "plomeria"))
+    if is_pipe:
+        has_diameter = bool(
+            re.search(r"\b\d+\s*/\s*\d+\b|\b\d+(?:[.,]\d+)?\s+pulgada(?:s)?\b", normalized)
+        ) or any(term in normalized for term in ("media pulgada", "tres cuartos", "una pulgada"))
+        if not has_diameter:
+            questions.append("\u00bfQu\u00e9 di\u00e1metro o medida necesita el tubo?")
+        if not any(term in normalized for term in ("pvc", "cpvc", "ppr", "cobre", "metal", "hierro", "acero")):
+            questions.append("\u00bfDe qu\u00e9 material debe ser el tubo?")
+        if not any(term in normalized for term in ("fria", "caliente", "sanitaria", "potable", "drenaje")):
+            questions.append("\u00bfEs para agua fr\u00eda, caliente, potable o drenaje?")
+
+    if any(term in normalized for term in ("pintura", "pintar")):
+        if not any(term in normalized for term in ("blanco", "negro", "rojo", "azul", "verde", "amarillo", "gris", "beige", "color")):
+            questions.append("\u00bfQu\u00e9 color necesita?")
+        if not any(term in normalized for term in ("interior", "exterior")):
+            questions.append("\u00bfSe usar\u00e1 en interior o exterior?")
+        if not any(term in normalized for term in ("galon", "cubeta", "litro", "litros")):
+            questions.append("\u00bfLa necesita por gal\u00f3n, cubeta o litro?")
+
+    return questions
+
+
 def reformulate_query(query: str) -> str:
     words = re.split(r"(\W+)", (query or "").strip())
     corrected: list[str] = []

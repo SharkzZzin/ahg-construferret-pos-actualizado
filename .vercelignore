@@ -1,0 +1,15 @@
+.env
+.env.*
+data/
+output/
+tmp/
+docs/
+tests/
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+*.dpapi

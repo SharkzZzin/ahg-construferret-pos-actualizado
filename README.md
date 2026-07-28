@@ -33,6 +33,16 @@ Abre:
 http://127.0.0.1:8765
 ```
 
+Portal público para clientes:
+
+```text
+http://127.0.0.1:8765/catalog
+```
+
+El portal permite explorar artículos disponibles, buscar por problemática y conversar
+con el asesor IA autónomo. El asesor solo recomienda artículos activos con existencia,
+explica compatibilidad y puede añadir complementos a una lista de selección.
+
 Acceso inicial:
 
 ```text

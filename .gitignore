@@ -3,5 +3,9 @@ data/*.db-journal
 data/*.db-shm
 data/*.db-wal
 data/*.db
+data/*.log
+data/credential_secret.dpapi
 __pycache__/
 *.pyc
+.vercel
+.env*

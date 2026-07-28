@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .credential_store import load_credential_secret, save_credential_secret
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -63,13 +65,17 @@ class Settings:
         "https://ecf-platform-frontend-50801509587.us-central1.run.app",
     ).rstrip("/")
     auth_secure_cookie: bool = os.getenv("AHG_AUTH_SECURE_COOKIE", "0") == "1"
-    credential_secret: str = os.getenv("AHG_CREDENTIAL_SECRET", "").strip()
+    credential_secret: str = os.getenv("AHG_CREDENTIAL_SECRET", "").strip() or load_credential_secret(DATA_DIR)
     paypal_client_id: str = os.getenv("PAYPAL_CLIENT_ID", "").strip()
     paypal_client_secret: str = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
     paypal_environment: str = os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip().lower()
     paypal_currency: str = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
     paypal_dop_per_usd: float = float(os.getenv("PAYPAL_DOP_PER_USD", "60.00"))
     paypal_no_charge: bool = os.getenv("PAYPAL_NO_CHARGE", "1") != "0"
+    ollama_enabled: bool = os.getenv("OLLAMA_ENABLED", "0") == "1"
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3:1.7b").strip()
+    ollama_timeout_seconds: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 
     @property
     def paypal_configured(self) -> bool:
@@ -89,3 +95,6 @@ class Settings:
 
 
 settings = Settings()
+
+if settings.credential_secret and os.getenv("AHG_CREDENTIAL_SECRET"):
+    save_credential_secret(settings.credential_secret, DATA_DIR)

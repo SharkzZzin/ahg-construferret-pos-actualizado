@@ -13,8 +13,9 @@ try:
     from .config import settings
     from .database import Database, DatabaseError
     from .invoicing import build_ecf_xml, invoice_public_model
+    from .local_ai import LocalAIUnavailable, consult_local_model
     from .paypal_api import PayPalClient
-    from .recommender import recommend_products, suggest_ai_guidance
+    from .recommender import recommend_products, required_filter_questions, suggest_ai_guidance
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from ahg_pos.auth import clear_session_cookie, parse_cookie_token, session_cookie
@@ -22,8 +23,9 @@ except ImportError:
     from ahg_pos.config import settings
     from ahg_pos.database import Database, DatabaseError
     from ahg_pos.invoicing import build_ecf_xml, invoice_public_model
+    from ahg_pos.local_ai import LocalAIUnavailable, consult_local_model
     from ahg_pos.paypal_api import PayPalClient
-    from ahg_pos.recommender import recommend_products, suggest_ai_guidance
+    from ahg_pos.recommender import recommend_products, required_filter_questions, suggest_ai_guidance
 
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -45,6 +47,29 @@ def imecf_client(company_id: int | None = None) -> IMECFClient:
 class POSHandler(BaseHTTPRequestHandler):
     server_version = "AHGPos/0.1"
 
+    def build_public_quote(self, items: list[dict]) -> dict:
+        catalog = {str(row["id"]): row for row in DB.list_products()}
+        lines = []
+        subtotal = 0.0
+        tax = 0.0
+        for raw in items[:50]:
+            product = catalog.get(str(raw.get("product_id", "")))
+            if not product or not bool(product.get("active")):
+                raise ValueError("Uno de los productos seleccionados ya no está disponible.")
+            quantity = float(raw.get("quantity", 1) or 1)
+            stock = float(product.get("stock") or 0)
+            if quantity <= 0 or quantity > stock:
+                raise ValueError(f"Cantidad no disponible para {product['name']}.")
+            price = float(product.get("price") or 0)
+            line_subtotal = round(quantity * price, 2)
+            line_tax = round(line_subtotal * float(product.get("tax_rate") or 0) / 100, 2)
+            subtotal += line_subtotal
+            tax += line_tax
+            lines.append({"product_id": product["id"], "name": product["name"], "sku": product.get("sku", ""), "quantity": quantity, "unit_price": price, "line_subtotal": line_subtotal, "line_tax": line_tax})
+        if not lines:
+            raise ValueError("Selecciona al menos un producto.")
+        return {"lines": lines, "subtotal": round(subtotal, 2), "tax": round(tax, 2), "total": round(subtotal + tax, 2), "persisted": False}
+
     def do_GET(self) -> None:
         try:
             parsed = urlparse(self.path)
@@ -59,6 +84,24 @@ class POSHandler(BaseHTTPRequestHandler):
             elif path == "/api/auth/session":
                 user = self.current_user()
                 self.send_json({"authenticated": bool(user), "user": user.public() if user else None})
+            elif path.startswith("/api/public/tracking/"):
+                token = unquote(path.removeprefix("/api/public/tracking/"))
+                tracking = DB.track_invoice_by_token(token)
+                self.send_json({"tracking": tracking})
+            elif path == "/catalog":
+                self.send_file(WEB_DIR / "customer.html")
+            elif path in {"/static/customer.css", "/static/customer.js", "/static/polish.css"}:
+                self.send_file(STATIC_DIR / path.removeprefix("/static/"))
+            elif path == "/api/public/products":
+                query = parse_qs(parsed.query)
+                result = DB.list_products_page(query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["12"])[0])
+                available = [row for row in result["items"] if bool(row.get("active")) and float(row.get("stock") or 0) > 0]
+                self.send_json({"products": available, "pagination": result})
+            elif path == "/api/public/categories":
+                self.send_json({"categories": DB.list_categories()})
+            elif path == "/api/public/taxpayer":
+                value = parse_qs(parsed.query).get("value", [""])[0]
+                self.send_json(imecf_client().lookup_taxpayer(value))
             elif not self.current_user():
                 if path.startswith("/api/"):
                     self.send_error_json(401, "Debes iniciar sesión.")
@@ -66,6 +109,8 @@ class POSHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/login")
             elif path == "/":
                 self.send_file(WEB_DIR / "index.html")
+            elif path == "/api/public/quote-requests":
+                self.send_json({"requests": DB.list_public_quote_requests()})
             elif path.startswith("/static/"):
                 name = unquote(path.removeprefix("/static/"))
                 self.send_file(STATIC_DIR / name)
@@ -94,25 +139,41 @@ class POSHandler(BaseHTTPRequestHandler):
                     }
                 )
             elif path == "/api/products":
-                self.send_json({"products": DB.list_products()})
+                query = parse_qs(parsed.query)
+                page = query.get("page", ["1"])[0]
+                limit = query.get("limit", ["25"])[0]
+                search = query.get("q", [""])[0]
+                result = DB.list_products_page(search, page, limit)
+                self.send_json({"products": result["items"], "pagination": result})
             elif path == "/api/categories":
                 self.send_json({"categories": DB.list_categories()})
             elif path == "/api/clients":
-                self.send_json({"clients": DB.list_clients()})
+                query = parse_qs(parsed.query)
+                result = DB.list_clients_page(query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
+                self.send_json({"clients": result["items"], "pagination": result})
             elif path == "/api/suppliers":
-                self.send_json({"suppliers": DB.list_suppliers()})
+                query = parse_qs(parsed.query)
+                result = DB.list_suppliers_page(query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
+                self.send_json({"suppliers": result["items"], "pagination": result})
             elif path == "/api/preinvoices":
-                self.send_json({"preinvoices": DB.list_preinvoices()})
+                query = parse_qs(parsed.query)
+                result = DB.list_preinvoices_page(query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
+                self.send_json({"preinvoices": result["items"], "pagination": result})
             elif path.startswith("/api/preinvoices/"):
                 preinvoice_id = int(path.removeprefix("/api/preinvoices/"))
                 self.send_json({"preinvoice": DB.get_preinvoice(preinvoice_id)})
             elif path == "/api/credit-notes":
-                self.send_json({"credit_notes": DB.list_credit_notes()})
+                query = parse_qs(parsed.query)
+                result = DB.list_credit_notes_page(query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
+                self.send_json({"credit_notes": result["items"], "pagination": result})
             elif path == "/api/alerts":
                 self.send_json({"alerts": DB.low_stock()})
             elif path == "/api/invoices":
-                limit = int(parse_qs(parsed.query).get("limit", ["25"])[0])
-                self.send_json({"invoices": DB.recent_invoices(limit=limit), "summary": DB.daily_summary()})
+                query = parse_qs(parsed.query)
+                result = DB.recent_invoices_page(
+                    query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0]
+                )
+                self.send_json({"invoices": result["items"], "pagination": result, "summary": DB.daily_summary()})
             elif path.startswith("/api/invoices/") and path.count("/") == 3:
                 invoice_id = int(path.split("/")[3])
                 self.send_json({"invoice": invoice_public_model(DB.get_invoice(invoice_id))})
@@ -227,6 +288,95 @@ class POSHandler(BaseHTTPRequestHandler):
                     {"ok": True},
                     headers={"Set-Cookie": clear_session_cookie(settings.auth_secure_cookie)},
                 )
+            elif path == "/api/public/quote-requests":
+                customer_name = str(payload.get("customer_name", "")).strip()
+                phone = str(payload.get("phone", "")).strip()
+                email = str(payload.get("email", "")).strip()
+                problem = str(payload.get("problem", "")).strip()
+                fiscal = payload.get("fiscal") or {}
+                ecf_type = str(fiscal.get("ecf_type", "32")).strip()
+                rnc_cedula = "".join(ch for ch in str(fiscal.get("rnc_cedula", "")) if ch.isdigit())
+                if ecf_type not in {"31", "32"}:
+                    raise ValueError("El tipo de comprobante debe ser e-CF 31 o e-CF 32.")
+                if ecf_type == "31" and len(rnc_cedula) not in {9, 11}:
+                    raise ValueError("Para e-CF 31 el RNC o cédula es obligatorio y debe ser válido.")
+                if len(customer_name) < 2 or len(phone) < 7 or len(problem) < 5:
+                    raise ValueError("Indica nombre, teléfono y la problemática del cliente.")
+                quote = self.build_public_quote(payload.get("items") or [])
+                fiscal["ecf_type"] = ecf_type
+                fiscal["rnc_cedula"] = rnc_cedula
+                request = DB.save_public_quote_request(customer_name, phone, email, problem, quote, fiscal)
+                self.send_json({"request": request}, status=201)
+            elif False and path == "/api/public/ai/agent":
+                action = str(payload.get("action", "consult")).strip().lower()
+                if action == "prepare_quote":
+                    self.send_json({"quote": prepare_quote(DB, payload.get("items") or [])})
+                    return
+                if action not in {"consult", "recommend"}:
+                    raise ValueError("Acción del agente no válida.")
+                budget = payload.get("budget")
+                result = consult_agent(
+                    DB,
+                    str(payload.get("query", "")).strip(),
+                    history=payload.get("history") or [],
+                    context=str(payload.get("context", "")).strip(),
+                    budget=float(budget) if budget not in (None, "") else None,
+                    limit=int(payload.get("limit", 6)),
+                )
+                self.send_json(result)
+            elif path == "/api/public/ai/consult":
+                query = str(payload.get("query", "")).strip()
+                history = payload.get("history") or []
+                context = str(payload.get("context", "")).strip()
+                recent_context = " ".join(
+                    str(item.get("content", "")) for item in history[-6:] if isinstance(item, dict)
+                )
+                autonomous_query = " ".join(part for part in (recent_context, context, query) if part).strip()
+                budget = payload.get("budget")
+                recommendations = recommend_products(
+                    DB,
+                    autonomous_query,
+                    limit=min(8, max(1, int(payload.get("limit", 6)))),
+                    budget=float(budget) if budget not in (None, "") else None,
+                )
+                guidance = suggest_ai_guidance(DB, autonomous_query, recommendations)
+                questions: list[str] = []
+                for recommendation in recommendations:
+                    questions.extend(recommendation.get("questions", []))
+                questions = list(dict.fromkeys(questions))[:3]
+                if not autonomous_query:
+                    reply = "Cuéntame qué problema quieres resolver, dónde lo usarás y si conoces la medida o presupuesto."
+                elif recommendations:
+                    top = recommendations[0]
+                    reply = (
+                        f"Por lo que describes, empezaría con {top['name']}. "
+                        f"{top.get('advisor_summary', '')} {top.get('sales_tip', '')}"
+                    )
+                    if top.get("complements"):
+                        reply += " También revisaría: " + ", ".join(top["complements"]) + "."
+                else:
+                    reply = guidance.get("follow_up_prompt") or "Necesito un poco más de contexto para recomendarte algo compatible."
+                local_ai = None
+                try:
+                    local_ai = consult_local_model(query, history, recommendations)
+                except LocalAIUnavailable:
+                    # El flujo deterministico sigue funcionando si Ollama no esta disponible.
+                    local_ai = None
+                if local_ai:
+                    reply = local_ai["reply"]
+                    questions = local_ai["next_questions"] or questions
+                # Estos filtros son obligatorios: el modelo puede redactar una
+                # respuesta convincente, pero nunca debe inventar una medida.
+                questions = list(dict.fromkeys(required_filter_questions(autonomous_query) + questions))[:4]
+                self.send_json({
+                    "reply": reply,
+                    "recommendations": recommendations,
+                    "guidance": guidance,
+                    "next_questions": questions,
+                    "autonomous": True,
+                    "local_ai": bool(local_ai),
+                    "local_ai_model": local_ai.get("model", "") if local_ai else "",
+                })
             elif not self.current_user():
                 self.send_error_json(401, "Debes iniciar sesión.")
             elif path == "/api/recommend":
@@ -478,7 +628,9 @@ class POSHandler(BaseHTTPRequestHandler):
                     response_payload=exc.details if isinstance(exc.details, dict) else None,
                     error=imecf_warning,
                 )
+        tracking_token = invoice.get("tracking_token", "")
         invoice = DB.get_invoice(int(invoice["id"]))
+        invoice["tracking_token"] = tracking_token
         return {
             "invoice": invoice_public_model(invoice),
             "imecf_active": imecf.active,

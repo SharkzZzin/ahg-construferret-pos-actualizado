@@ -173,6 +173,51 @@ h3 {
   font-weight: 700;
 }
 
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  background: rgba(246, 251, 249, .96);
+  backdrop-filter: blur(10px);
+  transition: opacity .25s ease, visibility .25s ease;
+}
+.loading-screen.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+.loading-card { display: grid; place-items: center; padding: 0; background: transparent; text-align: center; }
+.loading-card img { width: min(250px, 58vw); height: auto; object-fit: contain; transform-style: preserve-3d; animation: ahg-logo-flip 1.45s ease-in-out infinite; filter: drop-shadow(0 16px 22px rgba(8, 95, 77, .18)); }
+.loading-card .spinner-border, .loading-card p { display: none; }
+.topbar-brand { display: flex; align-items: center; gap: 14px; }
+.topbar-logo { width: 76px; height: 52px; object-fit: contain; border-radius: 12px; background: rgba(255,255,255,.7); }
+@keyframes ahg-logo-flip { 0% { transform: perspective(620px) rotateY(0deg); } 50% { transform: perspective(620px) rotateY(180deg); } 100% { transform: perspective(620px) rotateY(360deg); } }
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 8px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pagination-controls button {
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--teal-dark);
+  background: #fff;
+  font-weight: 700;
+}
+
+.pagination-controls button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 .tab {
   min-width: 112px;
   min-height: 38px;

@@ -2,6 +2,10 @@ const form = document.querySelector("#login-form");
 const errorBox = document.querySelector("#login-error");
 const button = document.querySelector("#login-button");
 const password = document.querySelector("#password");
+const loadingScreen = document.querySelector("#loading-screen");
+const setLoading = (visible) => loadingScreen?.classList.toggle("is-hidden", !visible);
+
+window.addEventListener("load", () => setLoading(false));
 
 document.querySelector("#toggle-password").addEventListener("click", (event) => {
   const show = password.type === "password";
@@ -12,6 +16,7 @@ document.querySelector("#toggle-password").addEventListener("click", (event) => 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   errorBox.textContent = "";
+  setLoading(true);
   button.disabled = true;
   button.textContent = "Verificando...";
   try {
@@ -29,6 +34,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     errorBox.textContent = error.message;
   } finally {
+    setLoading(false);
     button.disabled = false;
     button.textContent = "Acceder";
   }
