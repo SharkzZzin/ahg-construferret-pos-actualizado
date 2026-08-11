@@ -13,7 +13,7 @@ try:
     from .config import settings
     from .database import Database, DatabaseError
     from .email_service import EmailDeliveryError, email_delivery_status, is_valid_email, send_prefactura_confirmation
-    from .invoicing import build_ecf_xml, invoice_public_model
+    from .invoicing import build_ecf_xml, invoice_public_model, make_dgii_qr_svg
     from .local_ai import LocalAIUnavailable, consult_local_model
     from .paypal_api import PayPalClient
     from .recommender import recommend_products, required_filter_questions, suggest_ai_guidance
@@ -24,7 +24,7 @@ except ImportError:
     from ahg_pos.config import settings
     from ahg_pos.database import Database, DatabaseError
     from ahg_pos.email_service import EmailDeliveryError, email_delivery_status, is_valid_email, send_prefactura_confirmation
-    from ahg_pos.invoicing import build_ecf_xml, invoice_public_model
+    from ahg_pos.invoicing import build_ecf_xml, invoice_public_model, make_dgii_qr_svg
     from ahg_pos.local_ai import LocalAIUnavailable, consult_local_model
     from ahg_pos.paypal_api import PayPalClient
     from ahg_pos.recommender import recommend_products, required_filter_questions, suggest_ai_guidance
@@ -203,7 +203,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 result = DB.recent_invoices_page(
                     query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0]
                 )
-                self.send_json({"invoices": result["items"], "pagination": result, "summary": DB.daily_summary()})
+                self.send_json({"invoices": [invoice_public_model(row) for row in result["items"]], "pagination": result, "summary": DB.daily_summary()})
             elif path.startswith("/api/invoices/") and path.count("/") == 3:
                 invoice_id = int(path.split("/")[3])
                 self.send_json({"invoice": invoice_public_model(DB.get_invoice(invoice_id))})
@@ -211,6 +211,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 imecf = imecf_client()
                 company = imecf.company
                 dashboard = DB.fiscal_dashboard()
+                dashboard["documents"] = [invoice_public_model(row) for row in dashboard.get("documents", [])]
                 dashboard["provider"] = {
                     "name": "IMECF Platform" if imecf.configured else "Proveedor local",
                     "mode": imecf.mode,
@@ -288,6 +289,14 @@ class POSHandler(BaseHTTPRequestHandler):
                 if not invoice.get("xml_text"):
                     DB.update_invoice_xml(invoice_id, xml_text)
                 self.send_text(xml_text, content_type="application/xml; charset=utf-8")
+            elif path.startswith("/api/invoices/") and path.endswith("/qr.svg"):
+                invoice_id = int(path.split("/")[3])
+                invoice = invoice_public_model(DB.get_invoice(invoice_id))
+                self.send_bytes(
+                    make_dgii_qr_svg(invoice.get("dgii_url")),
+                    content_type="image/svg+xml; charset=utf-8",
+                    headers={"Cache-Control": "private, no-store"},
+                )
             else:
                 self.send_error_json(404, "Ruta no encontrada.")
         except Exception as exc:

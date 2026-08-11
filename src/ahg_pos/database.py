@@ -1999,7 +1999,8 @@ class Database:
                 COALESCE(api.encf, '') AS provider_encf,
                 COALESCE(api.api_status, '') AS api_status,
                 COALESCE(api.last_error, '') AS api_error,
-                COALESCE(api.response_json, '') AS provider_response_json
+                COALESCE(api.response_json, '') AS provider_response_json,
+                COALESCE((SELECT fs.expires_at FROM fiscal_sequences fs WHERE fs.type_code = i.ecf_type LIMIT 1), '') AS sequence_expires_at
             FROM invoices i
             LEFT JOIN clients c ON c.id = i.client_id
             LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
@@ -2029,7 +2030,8 @@ class Database:
                    COALESCE(api.provider_document_id, '') AS provider_document_id,
                    COALESCE(api.track_id, '') AS track_id, COALESCE(api.encf, '') AS provider_encf,
                    COALESCE(api.api_status, '') AS api_status, COALESCE(api.last_error, '') AS api_error,
-                   COALESCE(api.response_json, '') AS provider_response_json
+                   COALESCE(api.response_json, '') AS provider_response_json,
+                   COALESCE((SELECT fs.expires_at FROM fiscal_sequences fs WHERE fs.type_code = i.ecf_type LIMIT 1), '') AS sequence_expires_at
             FROM invoices i LEFT JOIN clients c ON c.id = i.client_id
             LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
             WHERE {where} ORDER BY i.id DESC LIMIT ? OFFSET ?
@@ -2320,7 +2322,8 @@ class Database:
                 COALESCE(api.encf, '') AS provider_encf,
                 COALESCE(api.api_status, '') AS api_status,
                 COALESCE(api.last_error, '') AS api_error,
-                COALESCE(api.response_json, '') AS provider_response_json
+                COALESCE(api.response_json, '') AS provider_response_json,
+                COALESCE((SELECT fs.expires_at FROM fiscal_sequences fs WHERE fs.type_code = i.ecf_type LIMIT 1), '') AS sequence_expires_at
             FROM invoices i
             LEFT JOIN clients c ON c.id = i.client_id
             LEFT JOIN ecf_api_records api ON api.invoice_id = i.id

@@ -1,5 +1,5 @@
 [project]
 name = "app"
 version = "0.1.0"
-dependencies = [ "psycopg[binary]>=3.2, <4", "cryptography>=45, <47" ]
+dependencies = [ "psycopg[binary]>=3.2, <4", "cryptography>=45, <47", "qrcode>=8, <9" ]
 requires-python = ">=3.12,<3.15"

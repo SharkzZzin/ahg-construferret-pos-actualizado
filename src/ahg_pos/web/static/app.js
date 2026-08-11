@@ -11,6 +11,7 @@ const state = {
   ecfType: "32",
   imecfActive: false,
   imecfConfigured: false,
+  academicMode: true,
   fiscalDocuments: [],
   remoteFiscalDocuments: [],
   fiscalCompanies: [],
@@ -70,6 +71,7 @@ async function boot() {
   state.userRole = health.user.role;
   state.paypal = health.paypal || { configured: false };
   state.fiscalIssuer = health.fiscal_issuer || {};
+  state.academicMode = Boolean(health.academic_mode);
   $("#issuer-label").textContent = `IMECF: ${health.fiscal_issuer.workspace_name} · Emisor certificado: ${health.fiscal_issuer.name} · RNC ${health.fiscal_issuer.rnc}`;
   state.imecfActive = Boolean(health.imecf_active);
   state.imecfConfigured = Boolean(health.imecf_configured);
@@ -1439,7 +1441,11 @@ function fiscalDocumentCard(invoice) {
         <a class="table-button" href="${xmlHref}" target="_blank" rel="noreferrer">XML</a>
         ${invoice.provider_document_id ? `
           <button class="table-button" data-fiscal-action="status" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Consultar estado</button>
-          <button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Consultar DGII</button>
+          ${invoice.dgii_url
+            ? `<a class="table-button" href="${escapeHtml(invoice.dgii_url)}" target="_blank" rel="noreferrer">DGII TesteCF</a>`
+            : invoice.track_id
+              ? `<button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Rastrear</button>`
+              : `<span class="muted-text">Sin trackId; usa Estado</span>`}
         ` : `<span class="muted-text">Pendiente de enlace IMECF</span>`}
       </div>
     </article>
@@ -1480,6 +1486,7 @@ function normalizeRemoteDocument(document) {
     api_status: document.estado || document.status || "Remoto",
     api_error: document.errorMessage || "",
     track_id: document.trackId || "",
+    dgii_url: document.dgiiUrl || document.dgii_url || "",
     issued_at: document.createdAt || document.fechaEmision || "",
   };
 }
@@ -2186,7 +2193,11 @@ function fiscalActions(invoice) {
   return `
     <div class="row-actions">
       <button class="table-button" data-fiscal-action="status" data-invoice-id="${invoice.id}">Estado</button>
-      <button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id}">DGII</button>
+      ${invoice.dgii_url
+        ? `<a class="table-button" href="${escapeHtml(invoice.dgii_url)}" target="_blank" rel="noreferrer">DGII TesteCF</a>`
+        : invoice.track_id
+          ? `<button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id}">Rastrear</button>`
+          : `<span class="muted-text">Sin trackId</span>`}
       <button class="table-button" data-credit-source="${invoice.id}">E34</button>
     </div>
   `;
@@ -2234,59 +2245,54 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
   const encf = invoice.display_encf || invoice.en_ncf || "";
   const issueDate = formatReceiptDate(invoice.issued_at);
   const signatureDate = formatReceiptDateTime(invoice.signed_at || invoice.issued_at);
-  const qrData = [encf, issuer.rnc, invoice.rnc_cedula, Number(invoice.total || 0).toFixed(2), invoice.security_code].join("|");
   const items = invoice.items || [];
   const paymentLabel = paymentLabelFor(invoice.payment_method);
   const trackingUrl = invoice.tracking_token
     ? `${window.location.origin}/api/public/tracking/${encodeURIComponent(invoice.tracking_token)}`
     : "";
   const statusLine = invoice.provider_document_id
-    ? "Documento electrónico enviado para validación fiscal"
-    : "Modo: Comprobante local";
+    ? `Aceptado por IMECF/DGII en ambiente de prueba${invoice.api_status ? `: ${invoice.api_status}` : ""}`
+    : "Comprobante local pendiente de IMECF";
+  const qrHref = invoice.dgii_url || "";
+  const sequenceExpiry = invoice.sequence_expires_at ? formatReceiptDate(invoice.sequence_expires_at) : "No indicada";
+  const fiscalIssuerName = invoice.provider_issuer_name || issuer.name || "UTESA";
+  const fiscalIssuerRnc = invoice.provider_issuer_rnc || issuer.rnc || "";
+  const fiscalIssuerAddress = invoice.provider_issuer_address || issuer.address || "";
   return `
     <section class="aux-receipt">
-      <div class="aux-receipt-top">
-        <div class="aux-receipt-title">
-          <div class="aux-dgii">DGII</div>
-          <h3>Comprobante Auxiliar de Factura Electr&oacute;nica</h3>
-          <h4>${escapeHtml(invoice.ecf_label || `e-CF ${invoice.ecf_type}`)}</h4>
-        </div>
-      </div>
+      <div class="academic-document-stamp">SIMULACI&Oacute;N ACAD&Eacute;MICA &middot; TESTeCF &middot; SIN VALIDEZ FISCAL</div>
 
-      <div class="aux-meta-grid">
+      <header class="aux-fiscal-header">
+        <div class="aux-issuer-card">
+          <img class="aux-company-logo" src="/static/logo-ahg.png" alt="AHG Construferret" />
+          <div>
+            <h3>${escapeHtml(fiscalIssuerName)}</h3>
+            <strong>RNC:</strong> ${escapeHtml(formatFiscalId(fiscalIssuerRnc))}<br />
+            <strong>Nombre comercial:</strong> AHG CONSTRUFERRET<br />
+            <strong>Punto de emisi&oacute;n:</strong> ${escapeHtml(issuer.workspace_name || "UTESA")}<br />
+            <strong>Direcci&oacute;n:</strong> ${escapeHtml(fiscalIssuerAddress)}<br />
+            <strong>Fecha de emisi&oacute;n:</strong> ${escapeHtml(issueDate)}
+          </div>
+        </div>
+        <div class="aux-document-card">
+          <span>REPRESENTACI&Oacute;N IMPRESA DE PRUEBA</span>
+          <h4>${escapeHtml(invoice.ecf_label || `e-CF ${invoice.ecf_type}`)}</h4>
+          <strong>e-NCF:</strong> ${escapeHtml(encf)}<br />
+          <strong>Vencimiento de secuencia:</strong> ${escapeHtml(sequenceExpiry)}<br />
+          <strong>Ambiente:</strong> TesteCF
+        </div>
+      </header>
+
+      <section class="aux-buyer-card">
         <div>
-          <strong>Emisor:</strong><br />
-          RNC: ${escapeHtml(formatFiscalId(issuer.rnc || ""))}<br />
-          Raz&oacute;n Social: ${escapeHtml(issuer.name || "")}${issuer.workspace_name ? ` / ${escapeHtml(issuer.workspace_name)}` : ""}<br />
-          Direcci&oacute;n: ${escapeHtml(issuer.address || "")}
+          <strong>Raz&oacute;n social / Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
+          <strong>RNC/C&eacute;dula/Pasaporte:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}
         </div>
         <div>
-          <strong>Tipo de Receptor:</strong> ${invoice.rnc_cedula ? "Contribuyente" : "Consumidor Final"}<br />
-          <strong>Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
-          <strong>RNC/C&eacute;dula/Pasaporte:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}<br />
+          <strong>Tipo de receptor:</strong> ${invoice.rnc_cedula ? "Identificado" : "Consumidor Final"}<br />
           <strong>Direcci&oacute;n:</strong> ${escapeHtml(invoice.address || "") || "No indicada"}
         </div>
-      </div>
-
-      <div class="aux-access">
-        <div>
-          <strong>N&uacute;mero:</strong> ${escapeHtml(encf)}<br />
-          <strong>Fecha de Emisi&oacute;n:</strong> ${escapeHtml(issueDate)}<br />
-          <strong>Punto de Facturaci&oacute;n:</strong> ${escapeHtml(String(invoice.id || ""))}
-        </div>
-        <div>
-          Consulte por la clave de acceso en el portal DGII/IMECF<br />
-          <strong>CUFE:</strong> ${escapeHtml(invoice.track_id || invoice.security_code || encf)}<br />
-          <strong>C&oacute;digo de seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
-          <strong>Fecha y hora de firma:</strong> ${escapeHtml(signatureDate)}<br />
-          Protocolo de autorizaci&oacute;n: ${escapeHtml(invoice.provider_document_id || "Pendiente")}
-        </div>
-      </div>
-
-      <div class="aux-qr-footer" aria-label="C&oacute;digo QR del comprobante">
-        <div class="aux-qr">${fakeQrSvg(qrData)}</div>
-        <span>Consulte este comprobante mediante el c&oacute;digo QR en el portal DGII.</span>
-      </div>
+      </section>
 
       <table class="aux-items-table">
         <thead>
@@ -2308,34 +2314,46 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
       </table>
 
       <div class="aux-bottom-grid">
-        <table class="aux-tax-table">
-          <thead><tr><th colspan="3">Desglose ITBIS</th></tr></thead>
-          <tbody>
-            <tr><th>Monto Base</th><th>%</th><th>Impuesto</th></tr>
-            <tr><td>${plainMoney(invoice.subtotal)}</td><td>18</td><td>${plainMoney(invoice.tax)}</td></tr>
-            <tr><td>0.00</td><td>Exento</td><td>0.00</td></tr>
-            <tr><td>0.00</td><td>0</td><td>0.00</td></tr>
-            <tr><td colspan="2"><strong>Total</strong></td><td><strong>${plainMoney(invoice.tax)}</strong></td></tr>
-          </tbody>
-        </table>
+        <div class="aux-verification-block">
+          <div class="aux-qr-row">
+            ${qrHref ? `
+              <a class="aux-qr" href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer" aria-label="Consultar comprobante en DGII TesteCF">
+                <img src="/api/invoices/${encodeURIComponent(invoice.id)}/qr.svg" alt="QR oficial de consulta DGII TesteCF" />
+              </a>
+              <div>
+                <strong>Consulta DGII TesteCF</strong><br />
+                Escanea el QR para consultar el timbre electr&oacute;nico de prueba.<br />
+                <strong>C&oacute;digo de seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
+                <strong>Fecha y hora de firma:</strong> ${escapeHtml(signatureDate)}<br />
+                <a href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer">Abrir consulta DGII</a>
+              </div>
+            ` : `
+              <div class="aux-qr-unavailable">QR DGII pendiente</div>
+              <span>IMECF todav&iacute;a no ha devuelto una URL oficial de consulta. No se genera un QR ficticio.</span>
+            `}
+          </div>
+          <table class="aux-tax-table">
+            <thead><tr><th colspan="3">Desglose ITBIS</th></tr></thead>
+            <tbody>
+              <tr><th>Monto Base</th><th>%</th><th>Impuesto</th></tr>
+              <tr><td>${plainMoney(invoice.subtotal)}</td><td>18</td><td>${plainMoney(invoice.tax)}</td></tr>
+              <tr><td colspan="2"><strong>Total ITBIS</strong></td><td><strong>${plainMoney(invoice.tax)}</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
 
         <div class="aux-total-stack">
-          ${auxTotalRow("Valor Total", invoice.subtotal)}
-          ${auxTotalRow("Total Neto", invoice.subtotal)}
-          ${auxTotalRow("Monto Exento ITBIS", 0)}
+          ${auxTotalRow("Subtotal gravado", invoice.subtotal)}
+          ${auxTotalRow("Descuento", invoice.discount_total || 0)}
           ${auxTotalRow("Monto Gravado ITBIS", invoice.subtotal)}
-          ${auxTotalRow("ITBIS", invoice.tax)}
           ${auxTotalRow("Total Impuesto", invoice.tax)}
           ${auxTotalRow("Total", invoice.total, true)}
-          <div class="aux-payment-gap"></div>
           ${auxTotalRow("Forma de Pago", paymentLabel)}
-          ${auxTotalRow(paymentLabel, invoice.total)}
-          ${auxTotalRow("TOTAL PAGADO", invoice.total, true)}
-          ${auxTotalRow("Vuelto", 0)}
         </div>
       </div>
 
       <div class="aux-status-line">${escapeHtml(statusLine)}</div>
+      <div class="aux-status-line">ID IMECF: ${escapeHtml(invoice.provider_document_id || "Pendiente")}</div>
       ${trackingUrl ? `<div class="aux-status-line">Token de seguimiento: <a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noreferrer">Consultar estado remoto</a></div>` : ""}
       ${warning ? `<p class="notice-error aux-warning"><strong>Motivo de rechazo:</strong> ${escapeHtml(warning)}</p>` : ""}
     </section>
@@ -2384,6 +2402,9 @@ function plainMoney(value) {
 }
 
 function formatReceiptDate(value) {
+  const text = String(value || "");
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) return String(value || "");
   return date.toLocaleDateString("es-DO", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -2393,39 +2414,6 @@ function formatReceiptDateTime(value) {
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) return String(value || "");
   return date.toLocaleString("es-DO", { dateStyle: "short", timeStyle: "medium" });
-}
-
-function fakeQrSvg(text) {
-  const size = 29;
-  const cell = 4;
-  const margin = 2;
-  let hash = 2166136261;
-  for (const char of String(text || "")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  const isFinder = (x, y, ox, oy) => x >= ox && x < ox + 7 && y >= oy && y < oy + 7;
-  const finderDark = (x, y, ox, oy) => {
-    const dx = x - ox;
-    const dy = y - oy;
-    return dx === 0 || dy === 0 || dx === 6 || dy === 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4);
-  };
-  const rects = [];
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      let dark = false;
-      if (isFinder(x, y, 0, 0)) dark = finderDark(x, y, 0, 0);
-      else if (isFinder(x, y, size - 7, 0)) dark = finderDark(x, y, size - 7, 0);
-      else if (isFinder(x, y, 0, size - 7)) dark = finderDark(x, y, 0, size - 7);
-      else {
-        hash = Math.imul(hash ^ (x * 31 + y * 131), 1103515245) >>> 0;
-        dark = ((hash >>> ((x + y) % 16)) & 1) === 1;
-      }
-      if (dark) rects.push(`<rect x="${(x + margin) * cell}" y="${(y + margin) * cell}" width="${cell}" height="${cell}" />`);
-    }
-  }
-  const full = (size + margin * 2) * cell;
-  return `<svg viewBox="0 0 ${full} ${full}" role="img"><rect width="${full}" height="${full}" fill="#fff"/>${rects.join("")}</svg>`;
 }
 
 function renderOnlinePaymentStatus() {
