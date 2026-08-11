@@ -18,6 +18,7 @@ const state = {
   fiscalCompanies: [],
   fiscalFilter: "ALL",
   userRole: "",
+  userModules: [],
   paypal: null,
   paypalPayment: null,
   paypalSdkPromise: null,
@@ -35,6 +36,32 @@ const state = {
   webRequests: [],
   auditPagination: null,
 };
+
+const MODULE_DEFINITIONS = [
+  ["sale", "Venta"],
+  ["products", "Maestro de artículos"],
+  ["clients", "Clientes"],
+  ["suppliers", "Proveedores"],
+  ["preinvoices", "Pre-Facturas"],
+  ["assistant", "Asistente IA"],
+  ["inventory", "Inventario"],
+  ["fiscal", "Gestión Fiscal"],
+  ["reports", "Facturas"],
+  ["cash", "Cuadre de caja"],
+  ["audit", "Auditoría"],
+  ["admin", "Administración"],
+];
+
+const ROLE_DEFAULT_MODULES = {
+  admin: MODULE_DEFINITIONS.map(([module]) => module),
+  gerente: MODULE_DEFINITIONS.map(([module]) => module).filter((module) => module !== "admin"),
+  cajero: ["sale", "clients", "preinvoices", "reports", "cash"],
+  vendedor: ["sale", "clients", "preinvoices", "assistant", "reports"],
+  almacen: ["products", "suppliers", "inventory"],
+};
+
+const moduleLabel = (module) => MODULE_DEFINITIONS.find(([key]) => key === module)?.[1] || module;
+const hasModule = (module) => state.userModules.includes(module);
 
 const money = new Intl.NumberFormat("es-DO", {
   style: "currency",
@@ -75,6 +102,7 @@ async function boot() {
   $("#db-status").textContent = `BD ${health.database}`;
   $("#user-status").textContent = `${health.user.name} · ${health.user.role}`;
   state.userRole = health.user.role;
+  state.userModules = Array.isArray(health.user.modules) ? health.user.modules : [];
   state.paypal = health.paypal || { configured: false };
   state.fiscalIssuer = health.fiscal_issuer || {};
   state.academicMode = Boolean(health.academic_mode);
@@ -82,14 +110,8 @@ async function boot() {
   state.imecfActive = Boolean(health.imecf_active);
   state.imecfConfigured = Boolean(health.imecf_configured);
   renderFiscalMode(health);
-  await refreshProducts();
-  await refreshClients();
-  await refreshSuppliers();
-  await refreshPreinvoices();
-  await refreshWebRequests();
-  decorateWebRequests();
-  await refreshReports();
-  await refreshFiscal();
+  const firstModule = applyModuleAccess();
+  if (firstModule) await setView(firstModule, true);
 }
 
 function renderFiscalMode(health) {
@@ -109,7 +131,43 @@ function bindTabs() {
   });
 }
 
-function setView(view) {
+function applyModuleAccess() {
+  $$(".tab[data-view]").forEach((button) => { button.hidden = !hasModule(button.dataset.view); });
+  $$(".view[id]").forEach((section) => {
+    const authorized = hasModule(section.id);
+    section.setAttribute("aria-hidden", String(!authorized));
+    if (!authorized) section.classList.remove("active");
+  });
+  const firstModule = MODULE_DEFINITIONS.find(([module]) => hasModule(module))?.[0] || "";
+  if (!firstModule) toast("Tu usuario no tiene módulos asignados. Solicita acceso al administrador.", true);
+  return firstModule;
+}
+
+async function refreshViewData(view) {
+  if (view === "sale") {
+    await refreshProducts();
+    await refreshClients();
+    await refreshPreinvoices();
+    await refreshWebRequests();
+  }
+  if (view === "fiscal") await refreshFiscal();
+  if (view === "products") await refreshProductMaster();
+  if (view === "clients") await refreshClients();
+  if (view === "suppliers") await refreshSuppliers();
+  if (view === "preinvoices") await refreshPreinvoices();
+  if (view === "inventory") await refreshProducts();
+  if (view === "reports") await refreshReports();
+  if (view === "audit") await refreshAudit();
+  if (view === "cash") await refreshCash();
+  if (view === "admin") await refreshAdmin();
+}
+
+async function setView(view, refresh = true) {
+  if (!hasModule(view)) {
+    const fallback = MODULE_DEFINITIONS.find(([module]) => hasModule(module))?.[0];
+    if (!fallback) return;
+    view = fallback;
+  }
   $$(".tab").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.view === view)));
   $$(".view").forEach((section) => {
@@ -121,26 +179,41 @@ function setView(view) {
     }
   });
   document.body.dataset.view = view;
-  if (view === "fiscal") refreshFiscal();
-  if (view === "products") refreshProductMaster();
-  if (view === "clients") refreshClients();
-  if (view === "suppliers") refreshSuppliers();
-  if (view === "preinvoices") refreshPreinvoices();
-  if (view === "audit") refreshAudit();
-  if (view === "cash") refreshCash();
-  if (view === "admin") refreshAdmin();
+  if (refresh) await refreshViewData(view);
 }
 
 function bindAdmin() {
   $("#user-form")?.addEventListener("submit", saveUser);
   $("#download-backup")?.addEventListener("click", downloadBackup);
+  $("#user-role")?.addEventListener("change", () => renderUserModuleOptions(ROLE_DEFAULT_MODULES[$("#user-role").value] || []));
+  renderUserModuleOptions(ROLE_DEFAULT_MODULES.cajero);
+}
+
+function renderUserModuleOptions(selected = []) {
+  const container = $("#user-module-options");
+  if (!container) return;
+  const role = $("#user-role").value;
+  const effective = role === "admin" ? MODULE_DEFINITIONS.map(([module]) => module) : selected;
+  container.innerHTML = MODULE_DEFINITIONS.map(([module, label]) => `<label class="module-option"><input type="checkbox" value="${module}" ${effective.includes(module) ? "checked" : ""} ${role === "admin" ? "disabled" : ""} /><span>${escapeHtml(label)}</span></label>`).join("");
+}
+
+function selectedUserModules() {
+  return $$("#user-module-options input:checked").map((input) => input.value);
+}
+
+function resetUserForm() {
+  $("#user-form").reset();
+  $("#user-form-id").value = "";
+  $("#user-form-title").textContent = "Nuevo usuario";
+  $("#user-password").placeholder = "Mínimo 8 caracteres";
+  renderUserModuleOptions(ROLE_DEFAULT_MODULES.cajero);
 }
 
 async function refreshAdmin() {
   if (!$("#user-list")) return;
   try {
     const payload = await api("/api/users");
-    $("#user-list").innerHTML = (payload.users || []).map((user) => `<article class="client-card"><div><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · ${user.active ? "Activo" : "Inactivo"}</span><span>Último acceso: ${escapeHtml(user.last_login_at ? formatDate(user.last_login_at) : "Nunca")}</span></div><div class="company-actions"><button class="table-button" type="button" data-edit-user="${user.id}">Editar</button></div></article>`).join("") || `<div class="empty-state">No hay usuarios registrados.</div>`;
+    $("#user-list").innerHTML = (payload.users || []).map((user) => `<article class="client-card"><div><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · ${user.active ? "Activo" : "Inactivo"}</span><span>Último acceso: ${escapeHtml(user.last_login_at ? formatDate(user.last_login_at) : "Nunca")}</span><div class="user-module-summary">${(user.modules || []).map((module) => `<span>${escapeHtml(moduleLabel(module))}</span>`).join("") || "<em>Sin módulos asignados</em>"}</div></div><div class="company-actions"><button class="table-button" type="button" data-edit-user="${user.id}">Editar accesos</button></div></article>`).join("") || `<div class="empty-state">No hay usuarios registrados.</div>`;
     $("#user-list").querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => editUser((payload.users || []).find((user) => String(user.id) === String(button.dataset.editUser)))));
   } catch (exception) { toast(exception.message, true); }
 }
@@ -148,6 +221,7 @@ async function refreshAdmin() {
 function editUser(user) {
   if (!user) return;
   $("#user-form-id").value = user.id; $("#user-name").value = user.name || ""; $("#user-email").value = user.email || ""; $("#user-phone").value = user.phone || ""; $("#user-role").value = user.role || "cajero"; $("#user-active").checked = Boolean(user.active); $("#user-password").value = ""; $("#user-form-title").textContent = "Editar usuario"; $("#user-password").placeholder = "Vacío para conservar la actual";
+  renderUserModuleOptions(user.modules || ROLE_DEFAULT_MODULES[user.role] || []);
 }
 
 async function saveUser(event) {
@@ -155,9 +229,9 @@ async function saveUser(event) {
   const id = $("#user-form-id").value, error = $("#user-form-error"), button = $("#save-user");
   error.hidden = true; button.disabled = true;
   try {
-    const payload = { name: $("#user-name").value.trim(), email: $("#user-email").value.trim(), phone: $("#user-phone").value.trim(), role: $("#user-role").value, password: $("#user-password").value, active: $("#user-active").checked };
+    const payload = { name: $("#user-name").value.trim(), email: $("#user-email").value.trim(), phone: $("#user-phone").value.trim(), role: $("#user-role").value, password: $("#user-password").value, active: $("#user-active").checked, modules: selectedUserModules() };
     await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-    $("#user-form").reset(); $("#user-form-id").value = ""; $("#user-form-title").textContent = "Nuevo usuario"; $("#user-password").placeholder = "Mínimo 8 caracteres"; await refreshAdmin(); toast(id ? "Usuario actualizado." : "Usuario creado.");
+    resetUserForm(); await refreshAdmin(); toast(id ? "Usuario actualizado." : "Usuario creado.");
   } catch (exception) { error.textContent = exception.message; error.hidden = false; } finally { button.disabled = false; }
 }
 
@@ -179,7 +253,7 @@ async function refreshAudit(page = 1) {
   const result = payload.logs || {};
   state.auditPagination = result;
   const logs = result.items || [];
-  $("#audit-summary").innerHTML = `<span class="summary-chip">${result.total || 0} eventos registrados</span><span class="summary-chip">Página ${result.page || 1} de ${result.pages || 1}</span>`;
+  $("#audit-summary").innerHTML = `<span class="summary-chip">${result.total || 0} acciones de usuarios</span><span class="summary-chip">Página ${result.page || 1} de ${result.pages || 1}</span>`;
   $("#audit-table").innerHTML = logs.map((log) => {
     const details = Object.entries(log.details || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
     return `<tr><td>${escapeHtml(formatDate(log.created_at))}</td><td>${escapeHtml(log.user_name || "Sistema")}</td><td><strong>${escapeHtml(log.action)}</strong></td><td>${escapeHtml(log.entity_type || "")}</td><td>${escapeHtml(log.entity_id || "—")}</td><td>${escapeHtml(details || "—")}</td></tr>`;
@@ -244,7 +318,7 @@ function createCommandPalette() {
   const render = (term = "") => {
     const needle = normalize(term);
     $("#command-list").innerHTML = actions
-      .filter((item) => normalize(item.join(" ")).includes(needle))
+      .filter((item) => hasModule(item[2]) && normalize(item.join(" ")).includes(needle))
       .map(([title, description, view, label]) => `<button class="command-item" type="button" data-command-view="${view}"><span class="command-icon">${label.slice(0, 1)}</span><span><strong>${title}</strong><small>${description}</small></span><kbd>↵</kbd></button>`)
       .join("") || `<p class="command-empty">No encontramos esa acción.</p>`;
     $$("[data-command-view]").forEach((button) => button.addEventListener("click", () => { setView(button.dataset.commandView); toggleCommandPalette(false); }));
@@ -258,7 +332,7 @@ function toggleCommandPalette(open) {
   const palette = $("#command-palette");
   if (!palette) return;
   palette.hidden = !open;
-  if (open) { $("#command-search").value = ""; $("#command-search").focus(); }
+  if (open) { $("#command-search").value = ""; $("#command-search").dispatchEvent(new Event("input")); $("#command-search").focus(); }
 }
 
 function bindWebRequests() {

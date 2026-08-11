@@ -962,6 +962,68 @@ label {
   accent-color: var(--teal);
 }
 
+.user-module-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(241, 248, 246, 0.72);
+}
+
+.user-module-fieldset legend {
+  padding: 0 6px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.user-module-fieldset .section-copy {
+  margin: 0 0 12px;
+}
+
+.user-module-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.module-option {
+  display: flex !important;
+  align-items: center;
+  gap: 8px !important;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink) !important;
+  background: #fff;
+  cursor: pointer;
+}
+
+.module-option:has(input:checked) {
+  border-color: rgba(8, 137, 123, 0.48);
+  background: rgba(8, 137, 123, 0.1);
+}
+
+.module-option input {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  accent-color: var(--teal);
+}
+
+.module-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.module-option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.78;
+}
+
 #master-search {
   max-width: 360px;
 }
@@ -1273,6 +1335,29 @@ label {
 .preinvoice-card p,
 .preinvoice-card span {
   margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.client-card .user-module-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.client-card .user-module-summary span {
+  display: inline-flex;
+  margin: 0;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #08685e;
+  background: rgba(8, 137, 123, 0.11);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.user-module-summary em {
   color: var(--muted);
   font-size: 12px;
 }
@@ -2344,6 +2429,10 @@ th {
 }
 
 @media (max-width: 720px) {
+  .user-module-grid {
+    grid-template-columns: 1fr;
+  }
+
   .request-preview-customer {
     grid-template-columns: 1fr;
   }

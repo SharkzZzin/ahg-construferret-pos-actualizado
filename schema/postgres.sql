@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'cajero' CHECK(role IN ('admin', 'gerente', 'cajero', 'vendedor', 'almacen')),
+    module_permissions_json TEXT,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     last_login_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL

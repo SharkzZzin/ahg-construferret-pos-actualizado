@@ -15,6 +15,7 @@ from .auth import (
     hash_password,
     initial_admin_credentials,
     new_session_token,
+    normalize_user_modules,
     session_expiration,
     token_hash,
     verify_password,
@@ -142,7 +143,7 @@ def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float 
 
 
 POSTGRES_SCHEMA_LOCK_ID = 2026081001
-POSTGRES_SCHEMA_VERSION = "2026-08-11-payments-cash-v2"
+POSTGRES_SCHEMA_VERSION = "2026-08-11-user-modules-v3"
 
 
 class Database:
@@ -212,6 +213,7 @@ class Database:
         self.ensure_billing_columns()
         self.ensure_tracking_table()
         self.ensure_public_quote_request_table()
+        self.ensure_user_columns()
         self.ensure_audit_table()
         self.ensure_audit_triggers()
         if self.scalar("SELECT COUNT(*) FROM products") == 0:
@@ -403,6 +405,12 @@ class Database:
                         "FOR EACH ROW EXECUTE FUNCTION audit_row_change()"
                     )
         self.conn.commit()
+
+    def ensure_user_columns(self) -> None:
+        existing = self._column_names("users")
+        if "module_permissions_json" not in existing:
+            self.execute("ALTER TABLE users ADD COLUMN module_permissions_json TEXT")
+            self.conn.commit()
 
     def ensure_product_columns(self) -> None:
         columns = {
@@ -1006,7 +1014,7 @@ class Database:
         digits = "".join(ch for ch in normalized if ch.isdigit())
         user = self.fetch_one(
             """
-            SELECT id, name, email, phone, password_hash, role, active
+            SELECT id, name, email, phone, password_hash, role, module_permissions_json, active
             FROM users
             WHERE LOWER(email) = ? OR phone = ?
             LIMIT 1
@@ -1021,6 +1029,7 @@ class Database:
             email=str(user["email"]),
             phone=str(user["phone"]),
             role=str(user["role"]),
+            modules=normalize_user_modules(user.get("module_permissions_json"), str(user["role"])),
         )
         token = new_session_token()
         now = self.now()
@@ -1041,7 +1050,7 @@ class Database:
         now = self.now()
         row = self.fetch_one(
             """
-            SELECT u.id, u.name, u.email, u.phone, u.role, u.active, s.id AS session_id
+            SELECT u.id, u.name, u.email, u.phone, u.role, u.module_permissions_json, u.active, s.id AS session_id
             FROM user_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = ? AND s.expires_at > ?
@@ -1059,6 +1068,7 @@ class Database:
             email=str(row["email"]),
             phone=str(row["phone"]),
             role=str(row["role"]),
+            modules=normalize_user_modules(row.get("module_permissions_json"), str(row["role"])),
         )
 
     def revoke_session(self, token: str) -> None:
@@ -1662,12 +1672,20 @@ class Database:
         return self.get_public_quote_request(request_id)
 
     def list_users(self) -> list[dict[str, Any]]:
-        return self.fetch_all(
+        rows = self.fetch_all(
             """
-            SELECT id, name, email, phone, role, active, last_login_at, created_at
+            SELECT id, name, email, phone, role, module_permissions_json, active, last_login_at, created_at
             FROM users ORDER BY name, id
             """
         )
+        return [self.user_public_record(row) for row in rows]
+
+    @staticmethod
+    def user_public_record(row: dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        role = str(result.get("role") or "cajero")
+        result["modules"] = list(normalize_user_modules(result.pop("module_permissions_json", None), role))
+        return result
 
     def save_user(self, payload: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
         name = str(payload.get("name", "")).strip()
@@ -1686,23 +1704,27 @@ class Database:
         now = self.now()
         try:
             if user_id is not None:
-                existing = self.fetch_one("SELECT id FROM users WHERE id = ?", (int(user_id),))
+                existing = self.fetch_one("SELECT id, module_permissions_json FROM users WHERE id = ?", (int(user_id),))
                 if not existing:
                     raise DatabaseError("Usuario no encontrado.")
+                raw_modules = payload.get("modules") if "modules" in payload else existing.get("module_permissions_json")
+                modules_json = json.dumps(normalize_user_modules(raw_modules, role), ensure_ascii=False)
                 if password:
-                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, active = ?, password_hash = ? WHERE id = ?", (name, email, phone, role, active_value, hash_password(password), int(user_id)))
+                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, module_permissions_json = ?, active = ?, password_hash = ? WHERE id = ?", (name, email, phone, role, modules_json, active_value, hash_password(password), int(user_id)))
                 else:
-                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, active = ? WHERE id = ?", (name, email, phone, role, active_value, int(user_id)))
+                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, module_permissions_json = ?, active = ? WHERE id = ?", (name, email, phone, role, modules_json, active_value, int(user_id)))
                 saved_id = int(user_id)
             else:
-                saved_id = self.insert_and_get_id("INSERT INTO users(name, email, phone, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (name, email, phone, hash_password(password), role, active_value, now))
+                modules_json = json.dumps(normalize_user_modules(payload.get("modules"), role), ensure_ascii=False)
+                saved_id = self.insert_and_get_id("INSERT INTO users(name, email, phone, password_hash, role, module_permissions_json, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (name, email, phone, hash_password(password), role, modules_json, active_value, now))
             self.conn.commit()
         except Exception as exc:
             self.conn.rollback()
             if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
                 raise DatabaseError("Ya existe un usuario con ese correo.") from exc
             raise
-        return self.fetch_one("SELECT id, name, email, phone, role, active, last_login_at, created_at FROM users WHERE id = ?", (saved_id,)) or {}
+        saved = self.fetch_one("SELECT id, name, email, phone, role, module_permissions_json, active, last_login_at, created_at FROM users WHERE id = ?", (saved_id,)) or {}
+        return self.user_public_record(saved) if saved else {}
 
     def export_backup(self) -> dict[str, Any]:
         if self.kind == "sqlite":
@@ -2373,11 +2395,12 @@ class Database:
         page = max(1, int(page or 1))
         limit = min(100, max(1, int(limit or 50)))
         query = str(query or "").strip()
-        where = ""
+        clauses = ["a.user_id IS NOT NULL", "UPPER(a.action) NOT LIKE 'TRIGGER %'"]
         params: list[Any] = []
         if query:
-            where = "WHERE LOWER(a.action || ' ' || a.entity_type || ' ' || a.entity_id || ' ' || COALESCE(u.name, '')) LIKE ?"
+            clauses.append("LOWER(a.action || ' ' || a.entity_type || ' ' || a.entity_id || ' ' || COALESCE(u.name, '')) LIKE ?")
             params.append(f"%{query.lower()}%")
+        where = "WHERE " + " AND ".join(clauses)
         total = int(self.scalar(f"SELECT COUNT(*) FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id {where}", tuple(params)) or 0)
         offset = (page - 1) * limit
         rows = self.fetch_all(

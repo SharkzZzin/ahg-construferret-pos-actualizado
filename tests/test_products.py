@@ -63,6 +63,34 @@ class ProductMasterTests(unittest.TestCase):
         self.assertEqual(sku_results[0]["sku"], "CAB-12-THHN")
         self.assertGreaterEqual(sku_results[0]["confidence"], 90)
 
+    def test_user_module_permissions_are_persisted(self) -> None:
+        created = self.db.save_user(
+            {
+                "name": "Usuario restringido",
+                "email": "restringido@example.com",
+                "phone": "8095550101",
+                "role": "cajero",
+                "password": "ClaveSegura123!",
+                "modules": ["clients", "audit", "invalid"],
+                "active": True,
+            }
+        )
+        self.assertEqual(created["modules"], ["clients", "audit"])
+        authenticated = self.db.authenticate_user("restringido@example.com", "ClaveSegura123!")
+        self.assertIsNotNone(authenticated)
+        auth_user, _ = authenticated
+        self.assertEqual(auth_user.modules, ("clients", "audit"))
+
+    def test_audit_list_only_returns_user_actions(self) -> None:
+        admin = self.db.fetch_one("SELECT id FROM users ORDER BY id LIMIT 1")
+        self.db.log_audit(int(admin["id"]), "Actualizar cliente", "cliente", "42", {"name": "Cliente"})
+        self.db.log_audit(None, "TRIGGER UPDATE CLIENT", "cliente", "42", {})
+
+        actions = [item["action"] for item in self.db.list_audit_logs(limit=100)["items"]]
+
+        self.assertIn("Actualizar cliente", actions)
+        self.assertNotIn("TRIGGER UPDATE CLIENT", actions)
+
     def test_recommender_guidance_for_empty_search(self) -> None:
         results = recommend_products(self.db, "pieza espacial imposible xyz", limit=5)
         guidance = suggest_ai_guidance(self.db, "pieza espacial imposible xyz")
