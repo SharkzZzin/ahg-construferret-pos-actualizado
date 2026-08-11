@@ -2019,7 +2019,7 @@ th {
   font-weight: 800;
 }
 
-.split-payment-toggle span {
+.split-payment-toggle > span:last-child {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2070,6 +2070,39 @@ th {
 }
 
 .available-credit-item span { color: var(--muted); font-size: 12px; }
+
+.available-credit-item > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.available-credit-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.credit-payment-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px 12px;
+  border: 1px solid rgba(22, 101, 52, 0.2);
+  border-radius: 9px;
+  background: rgba(240, 253, 244, 0.88);
+}
+
+.credit-payment-plan[hidden] { display: none; }
+
+.credit-payment-plan div {
+  display: grid;
+  gap: 2px;
+}
+
+.credit-payment-plan small { color: var(--muted); }
+.credit-payment-plan > span { color: var(--muted); font-weight: 800; }
 
 .compact-select { width: auto; min-width: 145px; }
 
@@ -2429,6 +2462,16 @@ th {
 }
 
 @media (max-width: 720px) {
+  .available-credit-item,
+  .credit-payment-plan {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .available-credit-action {
+    justify-content: space-between;
+  }
+
   .user-module-grid {
     grid-template-columns: 1fr;
   }

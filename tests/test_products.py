@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ahg_pos.billing_api import build_send_payload
 from ahg_pos.database import Database
 from ahg_pos.recommender import recommend_products, suggest_ai_guidance
 
@@ -185,6 +186,8 @@ class ProductMasterTests(unittest.TestCase):
             {},
             {},
         )
+        all_valid_notes = self.db.available_credit_notes(None)
+        self.assertIn("E340000009991", [row["display_encf"] for row in all_valid_notes])
         client = self.db.save_client(
             {
                 "name": "Cliente que presenta el vale",
@@ -202,10 +205,18 @@ class ProductMasterTests(unittest.TestCase):
             payment_method="efectivo",
             credit_amount=50,
             credit_note_code="E340000009991",
+            payments=[{"payment_method": "tarjeta", "amount": 68}],
         )
 
         self.assertEqual(float(redeemed["total"]), 118)
         self.assertEqual(float(redeemed["credit_applied"]), 50)
+        self.assertEqual(redeemed["payment_method"], "mixto")
+        self.assertEqual(
+            [(row["payment_method"], float(row["amount"])) for row in redeemed["payments"]],
+            [("nota_credito", 50), ("tarjeta", 68)],
+        )
+        fiscal_payments = build_send_payload(redeemed)["ECF"]["Encabezado"]["IdDoc"]["TablaFormasPago"]["FormaDePago"]
+        self.assertEqual(fiscal_payments, [{"FormaPago": 7, "MontoPago": "50.00"}, {"FormaPago": 3, "MontoPago": "68.00"}])
         transaction = self.db.fetch_one("SELECT amount FROM daily_transactions WHERE invoice_id = ?", (redeemed["id"],))
         self.assertEqual(float(transaction["amount"]), 68)
         available = self.db.available_credit_notes(int(client["id"]), "E340000009991")

@@ -1002,18 +1002,27 @@ function bindSale() {
   $("#sim-card-expiry")?.addEventListener("input", formatCardExpiryInput);
 }
 
-function selectRegisteredClient() {
+async function selectRegisteredClient() {
   const client = state.clients.find((item) => Number(item.id) === Number($("#client-select").value));
+  const loadedCode = $("#credit-note-code").value.trim();
+  fillRegisteredClient(client);
+  $("#credit-amount").value = "0";
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  renderBuyerRequirement();
+  await refreshCreditAvailability();
+  if (loadedCode && state.availableCredit > 0) {
+    $("#credit-amount").value = Math.min(Number(state.availableCredit), cartTotals().total).toFixed(2);
+    renderTotals();
+  }
+}
+
+function fillRegisteredClient(client) {
   $("#client-rnc").value = formatFiscalId(client?.rnc_cedula || "");
   $("#client-name").value = client?.name || "";
   $("#client-phone").value = formatPhone(client?.phone || "");
   $("#client-email").value = client?.email || "";
   $("#client-address").value = client?.address || "";
-  $("#credit-amount").value = "0";
-  state.availableCredit = 0;
-  state.availableCreditNotes = [];
-  renderBuyerRequirement();
-  refreshCreditAvailability();
 }
 
 function paymentRowsFromForm() {
@@ -1038,6 +1047,10 @@ function renderSplitPayment(resetAmount = false) {
   const enabled = Boolean($("#split-payment-enabled")?.checked);
   const panel = $("#split-payment-panel");
   if (!panel) return;
+  const hasCredit = effectiveCreditAmount() > 0;
+  $("#payment-method-label").textContent = hasCredit ? "Forma de pago del monto restante" : "Pago";
+  $("#split-payment-title").textContent = hasCredit ? "Dividir saldo restante" : "Pago con dos formas";
+  $("#split-payment-caption").textContent = hasCredit ? "Usar dos medios adicionales (opcional)" : "Dividir el monto a cobrar";
   panel.hidden = !enabled;
   $("#split-payment-enabled").disabled = $("#payment-method").value === "credito";
   if ($("#payment-method").value === "credito" && enabled) {
@@ -1085,8 +1098,10 @@ function renderCreditAvailability() {
   const clientId = Number($("#client-select")?.value || 0);
   const code = $("#credit-note-code")?.value.trim() || "";
   box.className = `credit-availability ${state.availableCredit > 0 ? "available" : ""}`;
-  if (!clientId) {
-    box.textContent = "Selecciona un cliente registrado para consultar o canjear una nota de crédito.";
+  if (!clientId && state.availableCreditNotes.length) {
+    box.textContent = `${state.availableCreditNotes.length} nota(s) vigente(s). Carga una para seleccionar su cliente y aplicarla.`;
+  } else if (!clientId) {
+    box.textContent = code ? `No encontramos una nota vigente con el e-NCF ${code}.` : "Consulta las notas vigentes o selecciona un cliente registrado.";
   } else if (state.availableCredit > 0) {
     const source = code ? `Vale ${code}` : `${state.availableCreditNotes.length} nota(s) aceptada(s)`;
     box.textContent = `${source} · Saldo disponible: ${money.format(state.availableCredit)}.`;
@@ -1095,20 +1110,28 @@ function renderCreditAvailability() {
   }
   if (list) {
     list.innerHTML = state.availableCreditNotes.map((note) => `
-      <button class="available-credit-item" type="button" data-select-credit="${escapeHtml(note.display_encf)}">
-        <strong>${escapeHtml(note.display_encf)}</strong>
-        <span>${money.format(note.available_amount)} · vence ${escapeHtml(formatReceiptDate(note.expires_at))}</span>
-      </button>
+      <article class="available-credit-item">
+        <div><strong>${escapeHtml(note.display_encf)}</strong><span>${escapeHtml(note.source_client_name || "Consumidor Final")} · vence ${escapeHtml(formatReceiptDate(note.expires_at))}</span></div>
+        <div class="available-credit-action"><strong>${money.format(note.available_amount)}</strong><button class="table-button" type="button" data-select-credit="${note.id}">Cargar nota</button></div>
+      </article>
     `).join("");
     list.querySelectorAll("[data-select-credit]").forEach((button) => button.addEventListener("click", () => {
-      const note = state.availableCreditNotes.find((item) => item.display_encf === button.dataset.selectCredit);
+      const note = state.availableCreditNotes.find((item) => Number(item.id) === Number(button.dataset.selectCredit));
       if (!note) return;
+      const sourceClient = state.clients.find((item) => Number(item.id) === Number(note.source_client_id));
+      if (sourceClient) {
+        $("#client-select").value = String(sourceClient.id);
+        fillRegisteredClient(sourceClient);
+        renderBuyerRequirement();
+      }
       $("#credit-note-code").value = note.display_encf;
       $("#credit-amount").value = Math.min(Number(note.available_amount), cartTotals().total).toFixed(2);
       state.availableCredit = Number(note.available_amount);
       state.availableCreditNotes = [note];
+      $("#split-payment-enabled").checked = false;
       renderCreditAvailability();
       renderTotals();
+      toast(sourceClient ? `Nota ${note.display_encf} cargada.` : `Nota ${note.display_encf} cargada. Selecciona el cliente que presenta el vale.`);
     }));
   }
 }
@@ -1117,11 +1140,6 @@ async function refreshCreditAvailability(showMessage = false) {
   const clientId = Number($("#client-select")?.value || 0);
   state.availableCredit = 0;
   state.availableCreditNotes = [];
-  if (!clientId) {
-    renderCreditAvailability();
-    if (showMessage) toast("Selecciona un cliente registrado antes de aplicar el crédito.", true);
-    return;
-  }
   const code = $("#credit-note-code").value.trim().toUpperCase();
   const result = await api(`/api/credit-notes/available?client_id=${clientId}&code=${encodeURIComponent(code)}`);
   state.availableCredit = Number(result.available_total || 0);
@@ -1129,8 +1147,21 @@ async function refreshCreditAvailability(showMessage = false) {
   renderCreditAvailability();
   renderTotals();
   if (showMessage) {
-    toast(state.availableCredit > 0 ? `Crédito disponible: ${money.format(state.availableCredit)}.` : "No hay crédito disponible para aplicar.", state.availableCredit <= 0);
+    toast(state.availableCredit > 0 ? `${state.availableCreditNotes.length} nota(s) vigente(s) encontrada(s).` : "No hay notas de crédito vigentes disponibles.", state.availableCredit <= 0);
   }
+}
+
+function renderCreditPaymentPlan() {
+  const plan = $("#credit-payment-plan");
+  if (!plan) return;
+  const credit = effectiveCreditAmount();
+  const remaining = salePayableTotal();
+  plan.hidden = credit <= 0;
+  if (credit <= 0) return;
+  const remainder = remaining > 0
+    ? `<span>+</span><div><small>${escapeHtml(paymentLabelFor($("#payment-method").value))}</small><strong>${money.format(remaining)}</strong></div>`
+    : "";
+  plan.innerHTML = `<div><small>Nota de crédito</small><strong>${money.format(credit)}</strong></div>${remainder}<span>=</span><div><small>Total cubierto</small><strong>${money.format(credit + remaining)}</strong></div>`;
 }
 
 function selectedClientPayload() {
@@ -2180,6 +2211,7 @@ function renderTotals() {
   $("#credit-applied-row").hidden = credit <= 0;
   $("#amount-due").textContent = money.format(Math.max(0, totals.total - credit));
   $("#amount-due-row").hidden = credit <= 0;
+  renderCreditPaymentPlan();
   renderBuyerRequirement();
   renderSplitPayment();
   if (!$("#split-payment-enabled")?.checked) renderOnlinePaymentStatus();
@@ -2217,7 +2249,7 @@ async function issueInvoice() {
       toast("El crédito no puede superar el total de la venta.", true);
       return;
     }
-    if (paymentMethod === "credito") {
+    if (paymentMethod === "credito" && requestedCredit < total - 0.001) {
       toast("Selecciona una forma de pago inmediata para el monto restante.", true);
       return;
     }

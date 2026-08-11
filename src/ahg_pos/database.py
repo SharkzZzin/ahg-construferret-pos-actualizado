@@ -1467,14 +1467,18 @@ class Database:
         return round(sum(float(note["available_amount"]) for note in self.available_credit_notes(client_id)), 2)
 
     def available_credit_notes(self, client_id: int | None, note_code: str = "") -> list[dict[str, Any]]:
-        if not client_id:
-            return []
         code = str(note_code or "").strip().upper()
-        where = "i.client_id = ?"
-        params: tuple[Any, ...] = (client_id,)
-        if code:
+        where = "1 = 1"
+        params: tuple[Any, ...] = ()
+        if client_id and code:
             where = "(i.client_id = ? OR i.client_id IS NULL) AND UPPER(COALESCE(NULLIF(cn.provider_encf, ''), cn.en_ncf)) = ?"
             params = (client_id, code)
+        elif client_id:
+            where = "i.client_id = ?"
+            params = (client_id,)
+        elif code:
+            where = "UPPER(COALESCE(NULLIF(cn.provider_encf, ''), cn.en_ncf)) = ?"
+            params = (code,)
         rows = self.fetch_all(
             f"""
             SELECT cn.id, cn.en_ncf, cn.provider_encf, cn.total, cn.reason, cn.issued_at, cn.expires_at,
@@ -2506,7 +2510,7 @@ class Database:
                 raise DatabaseError("El monto de la nota de crédito no puede ser negativo.")
             if requested_credit > 0 and not client_id:
                 raise DatabaseError("Selecciona un cliente registrado para aplicar la nota de crédito.")
-            if requested_credit > 0 and payment_method == "credito":
+            if requested_credit > 0 and payment_method == "credito" and requested_credit < total:
                 raise DatabaseError("No se puede combinar una nota de crédito con una venta pendiente a crédito.")
             available_notes = self.available_credit_notes(client_id, credit_note_code) if requested_credit > 0 else []
             available_credit = round(sum(float(note["available_amount"]) for note in available_notes), 2)
@@ -2520,9 +2524,11 @@ class Database:
             fiscal_payment_rows = ([{"payment_method": "nota_credito", "amount": credit_applied}] if credit_applied > 0 else []) + tender_rows
             if len(fiscal_payment_rows) > 7:
                 raise DatabaseError("La nota de crÃ©dito y los demÃ¡s pagos superan las siete formas permitidas por DGII.")
-            if payment_method != "credito":
+            if payable_total <= 0:
+                stored_payment_method = "nota_credito"
+            elif payment_method != "credito":
                 methods = [row["payment_method"] for row in tender_rows]
-                stored_payment_method = "mixto" if len(methods) > 1 else (methods[0] if methods else "nota_credito")
+                stored_payment_method = "mixto" if credit_applied > 0 or len(methods) > 1 else (methods[0] if methods else "nota_credito")
             else:
                 stored_payment_method = "credito"
             sequence = self._next_sequence(ecf_type)
