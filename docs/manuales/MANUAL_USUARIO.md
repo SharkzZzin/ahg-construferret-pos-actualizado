@@ -4,9 +4,20 @@ Version 3.0 - agosto de 2026
 
 Este manual explica la operación completa del POS publicado con Vercel y Supabase. Las capturas fueron tomadas de la versión productiva actual. Los documentos fiscales y pagos se procesan únicamente en ambientes de prueba del proyecto académico.
 
-## 1. Inicio de sesión y pantalla principal
+## 1. Portada, acceso y pantalla principal
 
-Abre `https://ahg-construferret-pos.vercel.app/`. Si no existe una sesión activa, el sistema muestra el formulario de acceso. Escribe el correo o teléfono y la contraseña asignada por el administrador.
+Abre `https://ahg-construferret-pos.vercel.app/`. Si no existe una sesión activa, el sistema muestra una portada pública que presenta las funciones principales de la plataforma.
+
+![Portada de presentación y acceso](capturas/00-portada-acceso.png)
+
+En la portada puedes:
+
+- leer el resumen general del sistema;
+- consultar sus módulos y el flujo operativo;
+- desplazarte mediante **Funciones** y **Cómo funciona**;
+- pulsar **Acceder**, en la parte superior o en la tarjeta derecha.
+
+Al pulsar **Acceder** se abre el formulario seguro sobre la misma página. Escribe el correo o teléfono y la contraseña asignada por el administrador. Puedes cerrar el formulario con la **X**, haciendo clic fuera de la tarjeta o pulsando `Esc`.
 
 Después de autenticarte se abre **Inicio**, no el mostrador de venta.
 

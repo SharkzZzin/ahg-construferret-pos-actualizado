@@ -29,7 +29,7 @@ Aplicación publicada: https://ahg-construferret-pos.vercel.app/
 | Componente | Tecnología | Función |
 |---|---|---|
 | Aplicación | Python 3.12 | Servidor HTTP, reglas de negocio y API |
-| Interfaz | HTML, CSS y JavaScript | POS, dashboard y portal Customer |
+| Interfaz | HTML, CSS y JavaScript | Portada pública, POS, dashboard y portal Customer |
 | Producción | Vercel Functions | Publicación web y API serverless |
 | Datos | Supabase PostgreSQL | Persistencia multiusuario |
 | Desarrollo | SQLite | Ejecución local y pruebas |
@@ -59,7 +59,7 @@ python -m ahg_pos.app
 Direcciones locales:
 
 - POS: http://127.0.0.1:8765/
-- Inicio de sesión: http://127.0.0.1:8765/login
+- Presentación y acceso: http://127.0.0.1:8765/login
 - Portal Customer: http://127.0.0.1:8765/catalog
 
 La primera ejecución crea `data/ahg_demo.db`. Las credenciales iniciales se definen con `AHG_ADMIN_EMAIL`, `AHG_ADMIN_PHONE` y `AHG_ADMIN_PASSWORD`; cambia cualquier contraseña de demostración antes de compartir el sistema.
@@ -123,7 +123,7 @@ vercel.cmd deploy --prod --yes
 
 ## Operación resumida
 
-1. Inicia sesión; el dashboard será la primera pantalla.
+1. Revisa la portada pública y pulsa **Acceder** para iniciar sesión; el dashboard será la primera pantalla autenticada.
 2. Revisa pendientes, stock crítico, caja y documentos fiscales.
 3. Abre **Venta**, agrega productos y selecciona cliente y tipo de comprobante.
 4. Si usarás una nota, pulsa **Consultar notas vigentes** y luego **Cargar nota**.

@@ -8,6 +8,8 @@ Esta guía reúne los puntos de entrada de la documentación vigente del sistema
 
 Aplicación productiva: `https://ahg-construferret-pos.vercel.app/`
 
+Cuando no hay una sesión activa se presenta una portada informativa. Pulsa **Acceder** en la parte derecha para abrir el formulario de inicio de sesión.
+
 Después de iniciar sesión se abre el dashboard principal, con ventas del día, pendientes, stock crítico, caja, tendencia, estado fiscal, documentos recientes, productos destacados y accesos rápidos según los permisos del usuario.
 
 ## Manual de usuario

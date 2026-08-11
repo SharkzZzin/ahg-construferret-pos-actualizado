@@ -80,11 +80,15 @@ class AcademicModeTests(unittest.TestCase):
             "0",
         )
 
-    def test_login_does_not_publish_default_credentials(self) -> None:
+    def test_login_presents_the_system_without_publishing_credentials(self) -> None:
         login = (ROOT / "src" / "ahg_pos" / "web" / "login.html").read_text(encoding="utf-8")
         self.assertNotIn("Cambiar123!", login)
         self.assertNotIn("admin@ahg.local", login)
-        self.assertIn("Proyecto Integrador UTESA", login)
+        self.assertNotIn("Proyecto Integrador UTESA", login)
+        self.assertNotIn("los comprobantes emitidos no tienen validez fiscal", login)
+        self.assertIn("Conoce el sistema", login)
+        self.assertIn("data-open-login", login)
+        self.assertIn('id="access-dialog"', login)
 
     def test_intrusive_academic_banners_are_not_shown(self) -> None:
         pos = (ROOT / "src" / "ahg_pos" / "web" / "index.html").read_text(encoding="utf-8")
