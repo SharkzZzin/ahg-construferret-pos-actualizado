@@ -36,6 +36,7 @@ const state = {
   webRequests: [],
   auditPagination: null,
   dashboard: null,
+  managementReport: null,
   userName: "",
 };
 
@@ -1492,6 +1493,7 @@ function bindInventory() {
 
 function bindReports() {
   $("#refresh-reports").addEventListener("click", refreshReports);
+  $("#run-management-report")?.addEventListener("click", refreshManagementReport);
   $("#test-imecf").addEventListener("click", testImecfConnection);
   $("#open-e34-center").addEventListener("click", () => {
     setView("fiscal");
@@ -1501,6 +1503,11 @@ function bindReports() {
 
 function bindFiscal() {
   $("#refresh-fiscal").addEventListener("click", refreshFiscal);
+  $("#retry-integrations")?.addEventListener("click", async () => {
+    const result = await api("/api/integrations/retry", { method: "POST", body: "{}" });
+    toast(`Reintentos procesados: ${result.processed}. Completados: ${result.completed}.`, result.failed > 0);
+    await refreshFiscal();
+  });
   $("#fiscal-test-connection").addEventListener("click", testImecfConnection);
   $("#validate-fiscal-issuer").addEventListener("click", validateFiscalIssuer);
   $("#fiscal-sync-documents").addEventListener("click", syncFiscalDocuments);
@@ -1722,7 +1729,7 @@ function bindCash() {
   $("#refresh-cash")?.addEventListener("click", refreshCash);
   $("#cash-open-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    await api("/api/cash-register/open", { method: "POST", body: JSON.stringify({ opening_amount: Number($("#cash-opening-amount").value || 0), notes: $("#cash-opening-notes").value.trim() }) });
+    await api("/api/cash-register/open", { method: "POST", body: JSON.stringify({ terminal_name: $("#cash-terminal-name").value.trim() || "Principal", opening_amount: Number($("#cash-opening-amount").value || 0), notes: $("#cash-opening-notes").value.trim() }) });
     $("#cash-open-form").reset();
     toast("Caja abierta correctamente.");
     await refreshCash();
@@ -1758,7 +1765,7 @@ function renderCash() {
   $("#cash-open-form").hidden = open;
   $("#cash-close-form").hidden = !open;
   $("#cash-movement-form").querySelectorAll("input, select, button").forEach((element) => { element.disabled = !open; });
-  $("#cash-action-title").textContent = open ? `Caja #${session.id} abierta` : "Abrir caja";
+  $("#cash-action-title").textContent = open ? `Caja #${session.id} · ${session.terminal_name || "Principal"}` : "Abrir caja";
   const metrics = open || session.status === "cerrada" ? [
     ["Estado", open ? "Abierta" : "Cerrada"],
     ["Fondo inicial", money.format(session.opening_amount || 0)],
@@ -2105,7 +2112,30 @@ async function refreshProducts(page = 1) {
 }
 
 async function refreshReports() {
-  await refreshInvoicePage(1);
+  await Promise.all([refreshInvoicePage(1), refreshManagementReport()]);
+}
+
+async function refreshManagementReport() {
+  if (!$("#management-report-totals")) return;
+  const today = new Date();
+  const startDefault = new Date(today); startDefault.setDate(today.getDate() - 29);
+  if (!$("#report-end").value) $("#report-end").value = today.toISOString().slice(0, 10);
+  if (!$("#report-start").value) $("#report-start").value = startDefault.toISOString().slice(0, 10);
+  const payload = await api(`/api/reports/management?start=${encodeURIComponent($("#report-start").value)}&end=${encodeURIComponent($("#report-end").value)}`);
+  state.managementReport = payload.report;
+  renderManagementReport();
+}
+
+function renderManagementReport() {
+  const report = state.managementReport || { totals: {}, payments: [], top_products: [] };
+  const totals = report.totals || {};
+  $("#management-report-totals").innerHTML = [
+    ["Ventas", money.format(totals.sales || 0)], ["Comprobantes", totals.invoice_count || 0],
+    ["Margen estimado", money.format(totals.estimated_margin || 0)], ["ITBIS", money.format(totals.tax || 0)],
+    ["Descuentos", money.format(totals.discounts || 0)], ["Notas de crédito", money.format(totals.credits || 0)],
+  ].map(([label, value]) => `<article class="summary-card"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></article>`).join("");
+  $("#management-payment-list").innerHTML = (report.payments || []).map((row) => `<article><strong>${escapeHtml(paymentLabelFor(row.payment_method))}</strong><span>${money.format(row.amount)}</span></article>`).join("") || `<div class="empty-state">Sin pagos en el período.</div>`;
+  $("#management-product-list").innerHTML = (report.top_products || []).slice(0, 5).map((row) => `<article><strong>${escapeHtml(row.name)}</strong><span>${Number(row.quantity || 0)} uds. · ${money.format(row.total)}</span></article>`).join("") || `<div class="empty-state">Sin ventas en el período.</div>`;
 }
 
 async function refreshInvoicePage(page = 1) {

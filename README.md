@@ -24,6 +24,18 @@ Aplicación publicada: https://ahg-construferret-pos.vercel.app/
 - Administración de usuarios con acceso individual por módulo y respaldo JSON.
 - Búsqueda y recomendación local por nombre, SKU, código de barras o necesidad.
 
+## Mejoras de seguridad y operación
+
+- Caja independiente por usuario y terminal.
+- Reporte gerencial por período con ventas, margen estimado, impuestos, descuentos, medios de pago y productos principales.
+- Cola recuperable para reintentar confirmaciones por correo y documentos IMECF que fallen temporalmente.
+- Asistente híbrido: recomendación determinística siempre disponible y redacción con Ollama cuando existe un servidor accesible.
+- Bloqueo temporal después de cinco intentos fallidos de acceso.
+- Validación de origen y encabezados CSP/HSTS en las respuestas HTTP.
+- Clientes y proveedores solo se desactivan después de confirmar la contraseña real del usuario.
+- Stock, secuencias y notas de crédito se reservan mediante transacciones y bloqueos de PostgreSQL.
+- Una base PostgreSQL nueva exige `AHG_ADMIN_EMAIL` y `AHG_ADMIN_PASSWORD`.
+
 ## Arquitectura
 
 | Componente | Tecnología | Función |

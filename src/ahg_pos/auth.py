@@ -161,10 +161,16 @@ def clear_session_cookie(secure: bool = False) -> str:
     return "; ".join(attributes)
 
 
-def initial_admin_credentials() -> tuple[str, str, str, str]:
+def initial_admin_credentials(allow_defaults: bool = True) -> tuple[str, str, str, str]:
+    configured_password = os.getenv("AHG_ADMIN_PASSWORD", "")
+    configured_email = os.getenv("AHG_ADMIN_EMAIL", "")
+    if not allow_defaults and (not configured_password or not configured_email):
+        raise ValueError(
+            "Una base PostgreSQL nueva requiere AHG_ADMIN_EMAIL y AHG_ADMIN_PASSWORD."
+        )
     return (
         os.getenv("AHG_ADMIN_NAME", "Administrador AHG").strip(),
-        os.getenv("AHG_ADMIN_EMAIL", "admin@ahg.local").strip().lower(),
+        (configured_email or "admin@ahg.local").strip().lower(),
         "".join(ch for ch in os.getenv("AHG_ADMIN_PHONE", "8090000000") if ch.isdigit()),
-        os.getenv("AHG_ADMIN_PASSWORD", "Cambiar123!"),
+        configured_password or "Cambiar123!",
     )

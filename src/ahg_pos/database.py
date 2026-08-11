@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import json
 import secrets
+import hashlib
 from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -25,6 +26,10 @@ from .credentials import decrypt_secret, encrypt_secret, mask_secret
 
 
 class DatabaseError(RuntimeError):
+    pass
+
+
+class RateLimitError(DatabaseError):
     pass
 
 
@@ -143,7 +148,7 @@ def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float 
 
 
 POSTGRES_SCHEMA_LOCK_ID = 2026081001
-POSTGRES_SCHEMA_VERSION = "2026-08-11-user-modules-v3"
+POSTGRES_SCHEMA_VERSION = "2026-08-11-security-atomicity-v4"
 
 
 class Database:
@@ -214,6 +219,7 @@ class Database:
         self.ensure_tracking_table()
         self.ensure_public_quote_request_table()
         self.ensure_user_columns()
+        self.ensure_security_tables()
         self.ensure_audit_table()
         self.ensure_audit_triggers()
         if self.scalar("SELECT COUNT(*) FROM products") == 0:
@@ -412,6 +418,31 @@ class Database:
             self.execute("ALTER TABLE users ADD COLUMN module_permissions_json TEXT")
             self.conn.commit()
 
+    def ensure_security_tables(self) -> None:
+        timestamp = "TEXT" if self.kind == "sqlite" else "TIMESTAMPTZ"
+        self.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                key_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0,
+                first_attempt_at {timestamp} NOT NULL, locked_until {timestamp}
+            )
+            """
+        )
+        identity = "INTEGER PRIMARY KEY AUTOINCREMENT" if self.kind == "sqlite" else "SERIAL PRIMARY KEY"
+        self.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS integration_retry_jobs (
+                id {identity}, service TEXT NOT NULL, entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{{}}',
+                status TEXT NOT NULL DEFAULT 'pendiente', attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '', next_attempt_at {timestamp},
+                created_at {timestamp} NOT NULL, updated_at {timestamp} NOT NULL
+            )
+            """
+        )
+        self.execute("CREATE INDEX IF NOT EXISTS idx_retry_jobs_status ON integration_retry_jobs(status, next_attempt_at)")
+        self.conn.commit()
+
     def ensure_product_columns(self) -> None:
         columns = {
             "barcode": "TEXT NOT NULL DEFAULT ''",
@@ -554,6 +585,10 @@ class Database:
         self.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments_session ON invoice_payments(cash_session_id)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(cash_session_id)")
+        cash_columns = self._column_names("cash_sessions")
+        if "terminal_name" not in cash_columns:
+            self.execute("ALTER TABLE cash_sessions ADD COLUMN terminal_name TEXT NOT NULL DEFAULT 'Principal'")
+        self.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_cash_open_by_user ON cash_sessions(opened_by) WHERE status = 'abierta'")
         self.conn.commit()
         for row in self.fetch_all("SELECT id, issued_at FROM credit_notes WHERE COALESCE(expires_at, '') = ''"):
             issued = self._parse_datetime(row.get("issued_at"))
@@ -815,7 +850,10 @@ class Database:
     def ensure_initial_admin(self) -> None:
         if self.scalar("SELECT COUNT(*) FROM users") > 0:
             return
-        name, email, phone, password = initial_admin_credentials()
+        try:
+            name, email, phone, password = initial_admin_credentials(allow_defaults=self.kind != "postgres")
+        except ValueError as exc:
+            raise DatabaseError(str(exc)) from exc
         self.execute(
             """
             INSERT INTO users(name, email, phone, password_hash, role, active, created_at)
@@ -1009,8 +1047,44 @@ class Database:
         )
         self.conn.commit()
 
-    def authenticate_user(self, identifier: str, password: str) -> tuple[AuthUser, str] | None:
+    def _login_attempt_key(self, identifier: str, client_address: str) -> str:
+        return hashlib.sha256(f"{identifier.strip().lower()}|{client_address}".encode("utf-8")).hexdigest()
+
+    def login_is_allowed(self, identifier: str, client_address: str) -> bool:
+        key = self._login_attempt_key(identifier, client_address)
+        row = self.fetch_one("SELECT locked_until FROM login_attempts WHERE key_hash = ?", (key,))
+        if not row or not row.get("locked_until"):
+            return True
+        locked_until = self._parse_datetime(row["locked_until"])
+        now = datetime.now(locked_until.tzinfo or timezone.utc)
+        return locked_until <= now
+
+    def _record_login_failure(self, identifier: str, client_address: str) -> None:
+        key = self._login_attempt_key(identifier, client_address)
+        now_dt = datetime.now(timezone.utc)
+        row = self.fetch_one("SELECT attempts, first_attempt_at FROM login_attempts WHERE key_hash = ?", (key,))
+        attempts = 1
+        first = now_dt
+        if row:
+            first = self._parse_datetime(row.get("first_attempt_at"))
+            if now_dt - first.astimezone(timezone.utc) <= timedelta(minutes=15):
+                attempts = int(row.get("attempts") or 0) + 1
+        locked_until = (now_dt + timedelta(minutes=15)).isoformat(timespec="seconds") if attempts >= 5 else None
+        self.execute(
+            """
+            INSERT INTO login_attempts(key_hash, attempts, first_attempt_at, locked_until)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key_hash) DO UPDATE SET attempts = ?, first_attempt_at = ?, locked_until = ?
+            """,
+            (key, attempts, first.isoformat(timespec="seconds"), locked_until,
+             attempts, first.isoformat(timespec="seconds"), locked_until),
+        )
+        self.conn.commit()
+
+    def authenticate_user(self, identifier: str, password: str, client_address: str = "unknown") -> tuple[AuthUser, str] | None:
         normalized = identifier.strip().lower()
+        if not self.login_is_allowed(normalized, client_address):
+            raise RateLimitError("Demasiados intentos fallidos. Espera 15 minutos antes de intentarlo nuevamente.")
         digits = "".join(ch for ch in normalized if ch.isdigit())
         user = self.fetch_one(
             """
@@ -1022,6 +1096,7 @@ class Database:
             (normalized, digits),
         )
         if not user or not bool(user["active"]) or not verify_password(password, user["password_hash"]):
+            self._record_login_failure(normalized, client_address)
             return None
         auth_user = AuthUser(
             id=int(user["id"]),
@@ -1041,8 +1116,58 @@ class Database:
             (secrets.token_hex(16), auth_user.id, token_hash(token), session_expiration(), now, now),
         )
         self.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, auth_user.id))
+        self.execute("DELETE FROM login_attempts WHERE key_hash = ?", (self._login_attempt_key(normalized, client_address),))
         self.conn.commit()
         return auth_user, token
+
+    def enqueue_integration_retry(
+        self, service: str, entity_type: str, entity_id: str | int, payload: dict[str, Any], error: str
+    ) -> int:
+        existing = self.fetch_one(
+            "SELECT id FROM integration_retry_jobs WHERE service = ? AND entity_type = ? AND entity_id = ? AND status = 'pendiente'",
+            (service, entity_type, str(entity_id)),
+        )
+        now = self.now()
+        if existing:
+            self.execute(
+                "UPDATE integration_retry_jobs SET payload_json = ?, last_error = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False, default=str), str(error)[:2000], now, existing["id"]),
+            )
+            self.conn.commit()
+            return int(existing["id"])
+        retry_id = self.insert_and_get_id(
+            """
+            INSERT INTO integration_retry_jobs(service, entity_type, entity_id, payload_json, status, attempts, last_error, next_attempt_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'pendiente', 0, ?, ?, ?, ?)
+            """,
+            (service, entity_type, str(entity_id), json.dumps(payload, ensure_ascii=False, default=str), str(error)[:2000], now, now, now),
+        )
+        self.conn.commit()
+        return retry_id
+
+    def pending_integration_retries(self, limit: int = 25) -> list[dict[str, Any]]:
+        rows = self.fetch_all(
+            "SELECT * FROM integration_retry_jobs WHERE status = 'pendiente' ORDER BY id LIMIT ?", (min(100, max(1, limit)),)
+        )
+        for row in rows:
+            with suppress(json.JSONDecodeError):
+                row["payload"] = json.loads(row.get("payload_json") or "{}")
+            row.pop("payload_json", None)
+        return rows
+
+    def finish_integration_retry(self, retry_id: int, error: str = "") -> None:
+        now = self.now()
+        if error:
+            self.execute(
+                "UPDATE integration_retry_jobs SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                (str(error)[:2000], (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(timespec="seconds"), now, retry_id),
+            )
+        else:
+            self.execute(
+                "UPDATE integration_retry_jobs SET status = 'completado', attempts = attempts + 1, last_error = '', updated_at = ? WHERE id = ?",
+                (now, retry_id),
+            )
+        self.conn.commit()
 
     def session_user(self, token: str) -> AuthUser | None:
         if not token:
@@ -1050,7 +1175,8 @@ class Database:
         now = self.now()
         row = self.fetch_one(
             """
-            SELECT u.id, u.name, u.email, u.phone, u.role, u.module_permissions_json, u.active, s.id AS session_id
+            SELECT u.id, u.name, u.email, u.phone, u.role, u.module_permissions_json, u.active,
+                   s.id AS session_id, s.last_seen_at
             FROM user_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = ? AND s.expires_at > ?
@@ -1060,8 +1186,9 @@ class Database:
         )
         if not row or not bool(row["active"]):
             return None
-        self.execute("UPDATE user_sessions SET last_seen_at = ? WHERE id = ?", (now, row["session_id"]))
-        self.conn.commit()
+        if datetime.now(timezone.utc) - self._parse_datetime(row.get("last_seen_at")).astimezone(timezone.utc) >= timedelta(minutes=5):
+            self.execute("UPDATE user_sessions SET last_seen_at = ? WHERE id = ?", (now, row["session_id"]))
+            self.conn.commit()
         return AuthUser(
             id=int(row["id"]),
             name=str(row["name"]),
@@ -1517,6 +1644,15 @@ class Database:
         remaining = round(float(amount), 2)
         applied_total = 0.0
         notes = self.available_credit_notes(client_id, note_code)
+        if self.kind == "postgres" and notes:
+            placeholders = ", ".join("?" for _ in notes)
+            self.fetch_all(
+                f"SELECT id FROM credit_notes WHERE id IN ({placeholders}) ORDER BY id FOR UPDATE",
+                tuple(note["id"] for note in notes),
+            )
+            # Recalculate after obtaining the locks; another transaction may have
+            # consumed part of the balance while this transaction was waiting.
+            notes = self.available_credit_notes(client_id, note_code)
         for note in notes:
             available = float(note["available_amount"])
             if available <= 0:
@@ -1535,9 +1671,9 @@ class Database:
                 break
         return applied_total
 
-    def delete_client(self, client_id: int, password: str) -> None:
-        if password != "0000":
-            raise PermissionError("Contraseña de seguridad incorrecta.")
+    def delete_client(self, client_id: int, user_id: int, password: str) -> None:
+        if not self.verify_user_password(user_id, password):
+            raise PermissionError("La contraseña del usuario no es correcta.")
         self.execute("UPDATE clients SET active = 0 WHERE id = ?", (client_id,))
         self.conn.commit()
 
@@ -1638,9 +1774,9 @@ class Database:
             raise DatabaseError("Proveedor no encontrado.")
         return supplier
 
-    def delete_supplier(self, supplier_id: int, password: str) -> None:
-        if password != "0000":
-            raise PermissionError("Contraseña de seguridad incorrecta.")
+    def delete_supplier(self, supplier_id: int, user_id: int, password: str) -> None:
+        if not self.verify_user_password(user_id, password):
+            raise PermissionError("La contraseña del usuario no es correcta.")
         self.execute("UPDATE suppliers SET active = 0, updated_at = ? WHERE id = ?", (self.now(), supplier_id))
         self.conn.commit()
 
@@ -2122,23 +2258,26 @@ class Database:
         )
         self.conn.commit()
 
-    def get_open_cash_session(self) -> dict[str, Any] | None:
-        return self.fetch_one(
-            "SELECT * FROM cash_sessions WHERE status = 'abierta' ORDER BY id DESC LIMIT 1"
-        )
+    def get_open_cash_session(self, user_id: int | None = None) -> dict[str, Any] | None:
+        if user_id is not None:
+            return self.fetch_one(
+                "SELECT * FROM cash_sessions WHERE status = 'abierta' AND opened_by = ? ORDER BY id DESC LIMIT 1",
+                (user_id,),
+            )
+        return self.fetch_one("SELECT * FROM cash_sessions WHERE status = 'abierta' ORDER BY id DESC LIMIT 1")
 
-    def open_cash_session(self, user_id: int, opening_amount: float, notes: str = "") -> dict[str, Any]:
-        if self.get_open_cash_session():
-            raise DatabaseError("Ya existe una caja abierta. Debes cerrarla antes de iniciar otra.")
+    def open_cash_session(self, user_id: int, opening_amount: float, notes: str = "", terminal_name: str = "Principal") -> dict[str, Any]:
+        if self.get_open_cash_session(user_id):
+            raise DatabaseError("Ya tienes una caja abierta. Debes cerrarla antes de iniciar otra.")
         amount = round(float(opening_amount or 0), 2)
         if amount < 0:
             raise DatabaseError("El fondo inicial no puede ser negativo.")
         session_id = self.insert_and_get_id(
             """
-            INSERT INTO cash_sessions(opened_by, opened_at, opening_amount, status, notes)
-            VALUES (?, ?, ?, 'abierta', ?)
+            INSERT INTO cash_sessions(opened_by, opened_at, opening_amount, status, notes, terminal_name)
+            VALUES (?, ?, ?, 'abierta', ?, ?)
             """,
-            (user_id, self.now(), amount, str(notes or "").strip()[:500]),
+            (user_id, self.now(), amount, str(notes or "").strip()[:500], str(terminal_name or "Principal").strip()[:80]),
         )
         self.conn.commit()
         return self.cash_session_detail(session_id)
@@ -2146,7 +2285,7 @@ class Database:
     def add_cash_movement(
         self, user_id: int, movement_type: str, amount: float, description: str
     ) -> dict[str, Any]:
-        session = self.get_open_cash_session()
+        session = self.get_open_cash_session(user_id)
         if not session:
             raise DatabaseError("Abre la caja antes de registrar movimientos.")
         movement_type = str(movement_type or "").strip().lower()
@@ -2168,11 +2307,14 @@ class Database:
         self.conn.commit()
         return self.cash_session_detail(int(session["id"]))
 
-    def cash_session_detail(self, session_id: int | None = None) -> dict[str, Any]:
+    def cash_session_detail(self, session_id: int | None = None, user_id: int | None = None) -> dict[str, Any]:
         if session_id is None:
-            session = self.get_open_cash_session() or self.fetch_one(
-                "SELECT * FROM cash_sessions ORDER BY id DESC LIMIT 1"
-            )
+            session = self.get_open_cash_session(user_id)
+            if not session:
+                if user_id is None:
+                    session = self.fetch_one("SELECT * FROM cash_sessions ORDER BY id DESC LIMIT 1")
+                else:
+                    session = self.fetch_one("SELECT * FROM cash_sessions WHERE opened_by = ? ORDER BY id DESC LIMIT 1", (user_id,))
         else:
             session = self.fetch_one("SELECT * FROM cash_sessions WHERE id = ?", (session_id,))
         if not session:
@@ -2210,7 +2352,7 @@ class Database:
         return session
 
     def close_cash_session(self, user_id: int, counted_cash: float, notes: str = "") -> dict[str, Any]:
-        session = self.get_open_cash_session()
+        session = self.get_open_cash_session(user_id)
         if not session:
             raise DatabaseError("No hay una caja abierta para cerrar.")
         counted = round(float(counted_cash or 0), 2)
@@ -2231,7 +2373,12 @@ class Database:
         return self.cash_session_detail(int(session["id"]))
 
     def list_cash_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        rows = self.fetch_all("SELECT * FROM cash_sessions ORDER BY id DESC LIMIT ?", (min(100, max(1, int(limit))),))
+        rows = self.fetch_all(
+            """SELECT cs.*, COALESCE(op.name, 'Sistema') AS opened_by_name, COALESCE(cl.name, '') AS closed_by_name
+               FROM cash_sessions cs LEFT JOIN users op ON op.id = cs.opened_by LEFT JOIN users cl ON cl.id = cs.closed_by
+               ORDER BY cs.id DESC LIMIT ?""",
+            (min(100, max(1, int(limit))),),
+        )
         for row in rows:
             if row["status"] == "abierta":
                 current = self.cash_session_detail(int(row["id"]))
@@ -2324,7 +2471,7 @@ class Database:
             """
         )
 
-    def dashboard_summary(self) -> dict[str, Any]:
+    def dashboard_summary(self, user_id: int | None = None) -> dict[str, Any]:
         today = date.today()
         today_text = today.isoformat()
         sales = self.fetch_one(
@@ -2416,10 +2563,58 @@ class Database:
                 "accepted_today": int(provider_counts.get("accepted") or 0),
                 "attention_today": int(provider_counts.get("attention") or 0),
             },
-            "cash": self.cash_session_detail(),
+            "cash": self.cash_session_detail(user_id=user_id),
             "trend": trend,
             "top_products": top_products,
             "recent_invoices": self.recent_invoices(limit=6),
+        }
+
+    def management_report(self, start_date: str, end_date: str) -> dict[str, Any]:
+        try:
+            start = date.fromisoformat(start_date)
+            end = date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise DatabaseError("El rango del reporte no es válido.") from exc
+        if end < start or (end - start).days > 366:
+            raise DatabaseError("El reporte debe abarcar entre 1 y 366 días.")
+        params = (start.isoformat(), end.isoformat())
+        totals = self.fetch_one(
+            """
+            SELECT COUNT(*) AS invoice_count, COALESCE(SUM(i.total), 0) AS sales,
+                   COALESCE(SUM(i.tax), 0) AS tax, COALESCE(SUM(i.discount_total), 0) AS discounts,
+                   COALESCE(SUM(i.credit_applied), 0) AS credits
+            FROM invoices i WHERE DATE(i.issued_at) BETWEEN ? AND ?
+            """, params,
+        ) or {}
+        cost = float(self.scalar(
+            """SELECT COALESCE(SUM(ii.quantity * p.cost), 0) FROM invoice_items ii
+               JOIN invoices i ON i.id = ii.invoice_id JOIN products p ON p.id = ii.product_id
+               WHERE DATE(i.issued_at) BETWEEN ? AND ?""", params,
+        ) or 0)
+        sales = float(totals.get("sales") or 0)
+        return {
+            "start_date": start.isoformat(), "end_date": end.isoformat(),
+            "totals": {
+                "invoice_count": int(totals.get("invoice_count") or 0), "sales": round(sales, 2),
+                "tax": round(float(totals.get("tax") or 0), 2), "discounts": round(float(totals.get("discounts") or 0), 2),
+                "credits": round(float(totals.get("credits") or 0), 2), "estimated_cost": round(cost, 2),
+                "estimated_margin": round(sales - float(totals.get("tax") or 0) - cost, 2),
+            },
+            "payments": self.fetch_all(
+                """SELECT ip.payment_method, COALESCE(SUM(ip.amount), 0) AS amount
+                   FROM invoice_payments ip JOIN invoices i ON i.id = ip.invoice_id
+                   WHERE DATE(i.issued_at) BETWEEN ? AND ? GROUP BY ip.payment_method ORDER BY amount DESC""", params,
+            ),
+            "top_products": self.fetch_all(
+                """SELECT p.name, p.sku, COALESCE(SUM(ii.quantity), 0) AS quantity, COALESCE(SUM(ii.line_total), 0) AS total
+                   FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id JOIN products p ON p.id = ii.product_id
+                   WHERE DATE(i.issued_at) BETWEEN ? AND ? GROUP BY p.id, p.name, p.sku ORDER BY total DESC LIMIT 10""", params,
+            ),
+            "top_clients": self.fetch_all(
+                """SELECT COALESCE(c.name, 'Consumidor Final') AS name, COUNT(*) AS invoice_count, COALESCE(SUM(i.total), 0) AS total
+                   FROM invoices i LEFT JOIN clients c ON c.id = i.client_id WHERE DATE(i.issued_at) BETWEEN ? AND ?
+                   GROUP BY c.id, c.name ORDER BY total DESC LIMIT 10""", params,
+            ),
         }
 
     def fiscal_dashboard(self) -> dict[str, Any]:
@@ -2538,6 +2733,7 @@ class Database:
         credit_amount: float = 0.0,
         credit_note_code: str = "",
         payments: list[dict[str, Any]] | None = None,
+        cash_user_id: int | None = None,
     ) -> dict[str, Any]:
         if ecf_type not in {"31", "32"}:
             raise DatabaseError("Solo se permiten e-CF tipo 31 o 32 en esta fase.")
@@ -2549,6 +2745,13 @@ class Database:
         try:
             self.conn.execute("BEGIN")
             invoice_items: list[dict[str, Any]] = []
+            if self.kind == "postgres":
+                product_ids = sorted({str(item.get("product_id", "")).strip() for item in items})
+                placeholders = ", ".join("?" for _ in product_ids)
+                self.fetch_all(
+                    f"SELECT id FROM products WHERE id IN ({placeholders}) ORDER BY id FOR UPDATE",
+                    tuple(product_ids),
+                )
 
             for item in items:
                 product_id = str(item.get("product_id", "")).strip()
@@ -2681,10 +2884,12 @@ class Database:
                         line["line_total"],
                     ),
                 )
-                self.execute(
-                    "UPDATE products SET stock = stock - ? WHERE id = ?",
-                    (line["quantity"], line["product_id"]),
+                stock_update = self.execute(
+                    "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
+                    (line["quantity"], line["product_id"], line["quantity"]),
                 )
+                if stock_update.rowcount != 1:
+                    raise DatabaseError(f"El stock de {line['name']} cambió durante la venta. Revisa la cantidad e intenta nuevamente.")
                 self.execute(
                     """
                     INSERT INTO inventory_movements(product_id, movement_type, quantity, reference, created_at)
@@ -2693,7 +2898,7 @@ class Database:
                     (line["product_id"], "venta", -line["quantity"], sequence, issued_at),
                 )
 
-            cash_session = self.get_open_cash_session()
+            cash_session = self.get_open_cash_session(cash_user_id) if cash_user_id is not None else self.get_open_cash_session()
             cash_session_id = int(cash_session["id"]) if cash_session else None
             for row in fiscal_payment_rows:
                 self.execute(
@@ -2708,7 +2913,6 @@ class Database:
                     "INSERT INTO daily_transactions(invoice_id, amount, payment_method, created_at) VALUES (?, ?, ?, ?)",
                     (invoice_id, row["amount"], row["payment_method"], issued_at),
                 )
-            self.conn.commit()
             tracking_token = secrets.token_urlsafe(32)
             self.execute(
                 "INSERT INTO invoice_tracking_tokens(invoice_id, token_hash, created_at) VALUES (?, ?, ?)",

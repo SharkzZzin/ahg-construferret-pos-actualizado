@@ -346,6 +346,17 @@ El asesor no modifica inventario ni emite facturas.
 
 ## 20. Seguridad
 
+Al eliminar un cliente o proveedor, escribe tu propia contraseña de acceso. El código fijo anterior ya no se utiliza. Después de cinco intentos fallidos de inicio de sesión, el acceso queda bloqueado durante 15 minutos.
+
+### Reporte gerencial y recuperación de integraciones
+
+1. Abre **Facturas** y define las fechas en **Rendimiento del negocio**.
+2. Pulsa **Consultar** para revisar ventas, comprobantes, margen estimado, ITBIS, descuentos, notas de crédito, formas de pago y productos principales.
+3. En **Gestión Fiscal**, pulsa **Reintentar pendientes** cuando un correo o envío IMECF haya fallado temporalmente.
+4. Revisa el resultado mostrado y actualiza el módulo fiscal.
+
+Cada usuario de caja puede abrir su propio turno. Identifica la terminal al abrirla; solamente ese usuario puede registrar movimientos y cerrar su caja.
+
 - No compartas contraseñas ni claves de aplicaciones.
 - Cierra sesión en equipos compartidos.
 - Asigna a cada usuario solamente los módulos necesarios.
