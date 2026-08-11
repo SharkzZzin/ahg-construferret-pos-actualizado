@@ -697,6 +697,18 @@ class POSHandler(BaseHTTPRequestHandler):
                 supplier_id = int(path.removeprefix("/api/suppliers/"))
                 DB.delete_supplier(supplier_id, str(payload.get("password", "")))
                 self.send_json({"ok": True})
+            elif path.startswith("/api/public/quote-requests/"):
+                user = self.require_sales_user()
+                request_id = int(path.removeprefix("/api/public/quote-requests/"))
+                deleted = DB.delete_public_quote_request(request_id)
+                DB.log_audit(
+                    int(user.id),
+                    "Eliminar prefactura Customer",
+                    "pre-factura pública",
+                    request_id,
+                    {"customer_name": deleted.get("customer_name"), "total": deleted.get("total")},
+                )
+                self.send_json({"ok": True, "id": request_id})
             else:
                 self.send_error_json(404, "Ruta no encontrada.")
         except Exception as exc:

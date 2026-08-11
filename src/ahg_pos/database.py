@@ -1731,6 +1731,12 @@ class Database:
             result.append(item)
         return result
 
+    def delete_public_quote_request(self, request_id: int) -> dict[str, Any]:
+        request = self.get_public_quote_request(request_id)
+        self.execute("DELETE FROM public_quote_requests WHERE id = ?", (request_id,))
+        self.conn.commit()
+        return request
+
     def list_preinvoices(self) -> list[dict[str, Any]]:
         rows = self.fetch_all(
             """

@@ -123,6 +123,10 @@ class ProductMasterTests(unittest.TestCase):
         self.assertEqual(saved["problem"], "")
         self.assertEqual(saved["items"][0]["quantity"], 2)
 
+        deleted = self.db.delete_public_quote_request(int(saved["id"]))
+        self.assertEqual(deleted["id"], saved["id"])
+        self.assertFalse(any(row["id"] == saved["id"] for row in self.db.list_public_quote_requests()))
+
     def test_redeems_anonymous_e34_voucher_without_changing_new_invoice_total(self) -> None:
         product = self.db.save_product(
             {

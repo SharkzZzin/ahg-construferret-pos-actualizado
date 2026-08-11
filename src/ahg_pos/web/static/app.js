@@ -281,19 +281,37 @@ async function refreshWebRequests() {
       <span>${request.items.length} artículos · ${formatDate(request.created_at)}</span></div>
       <div><strong>${money.format(request.total)}</strong><br/><small>${request.items.map((item) => `${escapeHtml(item.name)} x${item.quantity}`).join(", ")}</small></div>
     </article>`).join("") || `<div class="empty-state">No hay solicitudes del catálogo.</div>`;
+  decorateWebRequests();
 }
 
 function decorateWebRequests() {
   $("#web-request-list").querySelectorAll(".preinvoice-card").forEach((card, index) => {
     const request = state.webRequests[index];
-    if (!request || card.querySelector("[data-load-web-request]")) return;
-    const button = document.createElement("button");
-    button.className = "primary-button compact";
-    button.textContent = "Cargar en ventas";
-    button.dataset.loadWebRequest = request.id;
-    button.addEventListener("click", () => loadWebRequest(request.id));
-    card.lastElementChild?.appendChild(button);
+    if (!request || card.querySelector("[data-web-request-actions]")) return;
+    const actions = document.createElement("div");
+    actions.dataset.webRequestActions = request.id;
+    actions.className = "stack compact-actions";
+    const loadButton = document.createElement("button");
+    loadButton.className = "primary-button compact";
+    loadButton.textContent = "Cargar en ventas";
+    loadButton.dataset.loadWebRequest = request.id;
+    loadButton.addEventListener("click", () => loadWebRequest(request.id));
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "table-button danger";
+    deleteButton.textContent = "Eliminar";
+    deleteButton.dataset.deleteWebRequest = request.id;
+    deleteButton.addEventListener("click", () => deleteWebRequest(request.id));
+    actions.append(loadButton, deleteButton);
+    card.lastElementChild?.appendChild(actions);
   });
+}
+
+async function deleteWebRequest(requestId) {
+  const request = state.webRequests.find((item) => Number(item.id) === Number(requestId));
+  if (!request || !window.confirm(`¿Eliminar la prefactura #${request.id} de ${request.customer_name}? Esta acción no se puede deshacer.`)) return;
+  await api(`/api/public/quote-requests/${request.id}`, { method: "DELETE" });
+  toast(`Prefactura #${request.id} eliminada.`);
+  await refreshWebRequests();
 }
 
 async function loadWebRequest(requestId) {
