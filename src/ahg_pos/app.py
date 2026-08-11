@@ -32,6 +32,10 @@ except ImportError:
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 STATIC_DIR = WEB_DIR / "static"
+ACADEMIC_LOGO_FALLBACK = (
+    "https://raw.githubusercontent.com/SharkzZzin/ahg-construferret-pos-actualizado/"
+    "699c29f30b7873f7567b6177b91236ffff878846/src/ahg_pos/web/static/logo-ahg.png"
+)
 DB = Database().connect()
 
 
@@ -89,7 +93,9 @@ class POSHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/")
                 else:
                     self.send_file(WEB_DIR / "login.html")
-            elif path in {"/static/login.css", "/static/login.js", "/static/logo-ahg.png"}:
+            elif path == "/static/logo-ahg.png":
+                self.send_logo()
+            elif path in {"/static/login.css", "/static/login.js"}:
                 self.send_file(STATIC_DIR / path.removeprefix("/static/"))
             elif path == "/api/auth/session":
                 user = self.current_user()
@@ -776,6 +782,14 @@ class POSHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_logo(self) -> None:
+        """Serve the bundled logo, with a pinned academic-release fallback for file-only deploys."""
+        logo_path = STATIC_DIR / "logo-ahg.png"
+        if logo_path.exists():
+            self.send_file(logo_path)
+        else:
+            self.send_redirect(ACADEMIC_LOGO_FALLBACK)
 
     def send_error_json(self, status: int, message: str) -> None:
         self.send_json({"error": message}, status=status)
