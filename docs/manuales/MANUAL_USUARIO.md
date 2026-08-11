@@ -1,204 +1,343 @@
 # Manual de usuario - AHG CONSTRUFERRET POS
 
-Version 1.0 - julio de 2026
+Version 3.0 - agosto de 2026
 
-## Guia visual del sistema
+Este manual explica la operación completa del POS publicado con Vercel y Supabase. Las capturas fueron tomadas de la versión productiva actual. Los documentos fiscales y pagos se procesan únicamente en ambientes de prueba del proyecto académico.
 
-Las siguientes capturas corresponden a la instalacion local documentada. Los datos visibles son datos de demostracion; en produccion se deben utilizar los datos reales del negocio.
+## 1. Inicio de sesión y pantalla principal
 
-### 1. Venta y pre-factura
+Abre `https://ahg-construferret-pos.vercel.app/`. Si no existe una sesión activa, el sistema muestra el formulario de acceso. Escribe el correo o teléfono y la contraseña asignada por el administrador.
 
-![Pantalla de venta y pre-factura](capturas/01-venta-prefactura.png)
+Después de autenticarte se abre **Inicio**, no el mostrador de venta.
 
-En la barra superior, **Salir** cierra la sesion. La navegacion abre cada modulo: **Venta**, **Maestro de articulos**, **Clientes**, **Proveedores**, **Pre-Facturas**, **Asistente IA**, **Inventario**, **Gestion Fiscal** y **Facturas**.
+![Dashboard principal](capturas/00-dashboard.png)
 
-En **Preordenes recibidas**, **Actualizar** vuelve a consultar las solicitudes del portal y **Cargar en ventas** copia una preorden pendiente al formulario de venta. En **Articulos**, el buscador filtra por codigo, nombre o problema; el boton **+** agrega una unidad al carrito. **Anterior** y **Siguiente** cambian la pagina de resultados.
+El dashboard resume:
 
-En **Pre-Factura**, **x** limpia el carrito; **e-CF 32** selecciona consumidor final y **e-CF 31** credito fiscal. **Consultar** verifica un RNC o cedula. Los campos de cliente, pago, nota y descuento completan la operacion. **Guardar pre-factura** crea una solicitud pendiente y **Emitir comprobante** intenta generar el e-CF despues de validar los datos.
+- **Ventas de hoy:** monto total y cantidad de comprobantes.
+- **Pendientes:** pre-facturas internas y solicitudes del portal Customer.
+- **Stock crítico:** artículos cuyo stock alcanzó o bajó del mínimo.
+- **Caja:** estado del turno y efectivo esperado.
+- **Tendencia de ventas:** total diario de los últimos siete días.
+- **Estado operativo:** ITBIS, descuentos, crédito aplicado, notas vigentes y estado fiscal.
+- **Últimos comprobantes:** documentos recientes con cliente, total y estado.
+- **Productos vendidos hoy:** clasificación por cantidad.
+- **Accesos rápidos:** solo aparecen módulos autorizados para el usuario.
 
-### 2. Maestro de articulos
-
-![Maestro de articulos](capturas/02-articulos.png)
-
-El formulario **Nuevo articulo** crea o actualiza un producto. **Guardar articulo** almacena SKU, codigo de barras, categoria, descripcion, costo, precio, ITBIS, stock y minimo. El buscador localiza registros. En cada tarjeta, **Editar** carga los datos en el formulario y **Desactivar** conserva el historial sin permitir nuevas ventas.
-
-### 3. Clientes
-
-![Modulo de clientes](capturas/03-clientes.png)
-
-**Consultar RNC/Cedula** busca los datos fiscales del cliente. **Guardar cliente** registra nombre, identificacion, telefono, correo, direccion, actividad y notas. La casilla **Cliente activo** controla si puede utilizarse en ventas. En el directorio, **Editar** modifica el registro, **Eliminar** lo retira cuando no existe historial dependiente y **Usar en venta** lo selecciona para una pre-factura.
-
-### 4. Proveedores
-
-![Modulo de proveedores](capturas/04-proveedores.png)
-
-**Guardar proveedor** registra razon social, RNC, contacto, telefono, correo, direccion y notas. El buscador filtra el directorio. **Editar** modifica los datos y **Eliminar** quita un proveedor que ya no se utiliza. Este modulo sirve como referencia administrativa para compras y abastecimiento.
-
-### 5. Pre-facturas recibidas
-
-![Modulo de pre-facturas](capturas/05-prefacturas.png)
-
-El buscador y los filtros permiten encontrar solicitudes por estado, cliente o fecha. **Actualizar** consulta el servidor. **Abrir** muestra productos, cantidades, precio, comprobante y datos del cliente. **Cargar en ventas** pasa la solicitud al mostrador para revisarla. **Confirmar** marca la solicitud como aceptada y **Rechazar** la cierra indicando el motivo. **Anterior** y **Siguiente** recorren las paginas.
-
-### 6. Asistente IA local
-
-![Asistente IA local del POS](capturas/06-asistente-ia.png)
-
-Escribe una necesidad en el campo de consulta y pulsa **Analizar necesidad**. El asistente identifica el tipo de trabajo, solicita filtros cuando faltan medidas o caracteristicas y consulta solo articulos disponibles. **Nueva consulta** limpia la conversacion. En cada recomendacion, **Agregar** envia el producto al carrito y **Ver articulo** muestra su ficha. La IA es local y no depende de tokens externos; sus recomendaciones no sustituyen la validacion tecnica del vendedor.
-
-### 7. Inventario
-
-![Modulo de inventario](capturas/07-inventario.png)
-
-El buscador localiza productos y **Stock critico** muestra los que estan por debajo del minimo. **Entrada** registra recepcion, **Salida** registra ajuste o merma y **Ajustar** corrige una existencia con motivo. **Anterior** y **Siguiente** controlan la paginacion. Todo movimiento debe conservar una observacion para auditoria.
-
-### 8. Gestion fiscal e IMECF
-
-![Gestion fiscal e IMECF](capturas/08-gestion-fiscal.png)
-
-**Nueva empresa** crea una configuracion fiscal. **Guardar empresa** almacena workspace, RNC, razon social, ambiente, URL y credenciales cifradas. **Validar empresa** comprueba que el RNC y el nombre coincidan. **Probar conexion** verifica IMECF sin emitir. **Activar** selecciona la empresa para facturacion. Nunca se deben pegar API keys en el manual, capturas publicas o repositorios.
-
-### 9. Facturas y tracking
-
-![Modulo de facturas](capturas/09-facturas.png)
-
-El buscador y los filtros consultan facturas por numero, cliente, estado o fecha. **Abrir** muestra el detalle y XML disponible. **Consultar estado** actualiza el estado remoto en IMECF. **Descargar XML**, **Descargar PDF** y **Imprimir** entregan los documentos al cliente. **Ver tracking** muestra el token o identificador de seguimiento y el resultado de la consulta. La paginacion evita cargar todo el historial en una sola pantalla.
-
-### 10. Portal cliente: preordenar productos
-
-![Portal cliente para preordenar productos](capturas/10-portal-preorden.png)
-
-La cabecera contiene **AHG CONSTRUFERRET** para volver al inicio, **Asesor IA** para cambiar a la orientacion tecnica y **Acceso personal** para entrar al POS. En **Buscar por producto, uso o SKU** se filtran resultados y el selector de categoria reduce la lista. **Agregar a preorden** incorpora una cantidad; **Anterior** y **Siguiente** cambian la pagina.
-
-En **Resumen**, el cliente selecciona e-CF 32 o e-CF 31, completa nombre, telefono, correo y el problema que desea resolver. **Enviar preorden al negocio** manda la solicitud para que aparezca en **Preordenes recibidas** del POS. La preorden no descuenta inventario ni emite factura hasta ser revisada.
-
-### 11. Portal cliente: asesor IA local
-
-![Portal cliente con asesor IA](capturas/11-portal-ia.png)
-
-En **Asesor IA local**, el cliente describe su problema. El asistente hace preguntas de filtro sobre tipo, medida, diametro, color, presentacion o uso cuando son necesarios. **Enviar respuesta** avanza la entrevista y **Nueva consulta** reinicia el caso. Las tarjetas recomendadas muestran descripcion, disponibilidad y uso sugerido; **Agregar a preorden** incorpora solo lo que el cliente confirma. El flujo finaliza enviando la preorden al negocio.
-
-### 12. Flujo completo recomendado
-
-1. El cliente consulta el catalogo o conversa con el asesor IA local.
-2. Selecciona productos y envia la preorden con sus datos.
-3. El vendedor abre **Pre-Facturas** y pulsa **Cargar en ventas**.
-4. Se revisan existencia, precio, cantidades, tipo de e-CF y datos fiscales.
-5. Se valida el RNC cuando corresponde y se emite el comprobante.
-6. Se entrega el e-NCF, XML, PDF y token de tracking.
-
-## 1. Inicio de sesion
-
-Abre el POS, escribe correo o telefono y contrasena. La barra superior muestra usuario y rol. Pulsa **Salir** para cerrar sesion.
-
-Permisos principales: `admin` gestiona fiscalidad; `gerente` y `almacen` gestionan productos e inventario; `cajero` y `vendedor` trabajan con clientes, pre-facturas y ventas segun permisos.
+Pulsa una tarjeta o acceso rápido para abrir el módulo correspondiente. **Salir** cierra la sesión.
 
 ## 2. Venta y pre-factura
 
-En **Venta**, busca por nombre, SKU, codigo de barras o necesidad escrita. Revisa precio, ITBIS y existencia; agrega productos; ajusta cantidades y descuentos; selecciona comprobante, cliente y pago; finalmente pulsa **Guardar pre-factura**.
+![Venta y pre-factura](capturas/01-venta-prefactura.png)
 
-Una pre-factura es una solicitud pendiente. Debe revisarse antes de emitir y no sustituye un comprobante fiscal.
+### Crear una venta
 
-## 3. Comprobantes fiscales
+1. Abre **Venta** desde el menú o desde **Nueva venta** en el dashboard.
+2. Busca por nombre, SKU, código de barras o necesidad.
+3. Pulsa **+** para agregar el artículo.
+4. Ajusta cantidad, precio autorizado y descuento por línea.
+5. Selecciona **e-CF 32** para consumidor final o **e-CF 31** para crédito fiscal.
+6. Selecciona un cliente registrado o completa los datos permitidos.
+7. Elige la forma de pago.
+8. Si corresponde, agrega descuento general y nota interna.
+9. Pulsa **Guardar pre-factura** para dejarla pendiente o **Emitir comprobante de prueba** para facturar.
 
-**e-CF 32 - consumidor final:** se usa para consumidor final y permite dejar datos fiscales vacios cuando no son requeridos.
+### Solicitudes del portal Customer
 
-**e-CF 31 - credito fiscal:** se usa cuando el comprador necesita comprobante fiscal. El RNC o cedula debe consultarse y los datos deben estar completos.
+En **Preordenes recibidas**:
 
-Para validar un comprador: selecciona cliente, escribe RNC/cedula, pulsa **Consultar**, verifica el nombre y confirma telefono, correo y direccion. No emitas si el RNC no corresponde.
+- **Actualizar** consulta nuevas solicitudes.
+- **Vista previa** muestra cliente, comentario, artículos y total sin llenar el carrito.
+- **Cargar en ventas** copia los artículos y datos al mostrador.
+- **Eliminar** borra una solicitud que no será procesada.
 
-## 4. Pre-Facturas
+La solicitud del portal no descuenta inventario hasta emitir la venta.
 
-En **Pre-Facturas** consulta solicitudes recibidas, abre una pre-factura, verifica productos, existencias, precios, cliente, tipo de e-CF y pago, y emite cuando el negocio la apruebe. Usa los controles de paginacion para recorrer listas grandes.
+## 3. Notas de crédito vigentes y pagos combinados
 
-Flujo: abrir -> revisar -> confirmar -> emitir -> entregar e-NCF y confirmacion.
+![Nota de crédito y pago del restante](capturas/13-notas-credito-pagos-mixtos.png)
 
-## 5. Maestro de articulos
+### Consultar y cargar una nota
 
-En **Maestro de articulos** administra SKU, codigo de barras, nombre, categoria, descripcion tecnica, costo, precio, ITBIS, stock, stock minimo, etiquetas y estado activo.
+1. Agrega los productos de la nueva compra.
+2. En **Usar nota de crédito**, pulsa **Consultar notas vigentes**.
+3. Revisa e-NCF, cliente de origen, vencimiento y saldo.
+4. Pulsa **Cargar nota**.
+5. Si la nota pertenece a un cliente registrado, el sistema lo selecciona.
+6. Si indica **Consumidor Final**, selecciona el cliente que presenta el vale.
+7. Modifica **Monto a aplicar** si no deseas consumir el saldo completo.
 
-Para crear: pulsa **Nuevo articulo**, completa los campos, revisa precio e impuesto y pulsa **Guardar articulo**. Para descontinuar, usa estado inactivo en lugar de borrar para conservar historial.
+El cuadro de plan de pago muestra automáticamente:
 
-## 6. Inventario
+`Nota de crédito + forma de pago del monto restante = total cubierto`
 
-En **Inventario** revisa existencias y movimientos. **Stock critico** muestra productos por debajo del minimo.
+### Nota más otro medio de pago
 
-Para ajustar: selecciona articulo, escribe cantidad o diferencia, indica motivo, guarda y verifica el movimiento. Realiza conteos fisicos periodicos.
+No actives **Dividir saldo restante** para el caso normal de dos formas totales. Solo carga la nota y elige **Efectivo**, **Tarjeta**, **Transferencia** o **PayPal** como forma del monto restante.
 
-## 7. Clientes y proveedores
+Ejemplo: nota RD$735.14 + efectivo RD$193.52 = total RD$928.66.
 
-En **Clientes** y **Proveedores** crea, edita, busca y consulta registros con paginacion. Usa RNC/cedula cuando corresponda y evita duplicados.
+Activa **Dividir saldo restante** únicamente cuando, además de la nota, dividirás lo pendiente entre dos medios adicionales, por ejemplo nota + efectivo + tarjeta.
 
-En clientes, la consulta fiscal puede traer nombre y datos remotos. Revisa la respuesta antes de guardarla.
+La nota no reduce el total fiscal del documento: se registra como forma de pago. Solo reduce el monto que el cliente debe entregar.
 
-## 8. Asistente IA local
+## 4. Pagos con dos medios sin nota
 
-El asistente funciona localmente con los productos, stock, categorias y reglas de recomendacion de la base de datos. No depende de una API de OpenAI o Gemini.
+1. En **Pago**, selecciona el primer medio.
+2. Activa **Pago con dos formas**.
+3. Escribe el monto de la primera forma.
+4. Selecciona la segunda forma.
+5. El sistema calcula el monto restante.
+6. Verifica que ambos importes sean mayores que cero.
+7. Si uno es tarjeta o PayPal, completa la pasarela de prueba antes de emitir.
 
-Para obtener mejores recomendaciones:
+Los dos medios deben cubrir exactamente el monto a cobrar.
 
-1. Abre **Asistente IA** en el POS o **Asesor IA local** en el portal.
-2. Describe problema, lugar de uso y objetivo.
-3. Incluye material, medidas, cantidad y presupuesto si los conoces.
-4. Responde las preguntas de seguimiento.
-5. Revisa compatibilidad, existencia y explicacion.
-6. Agrega solo lo que decidas.
+## 5. Maestro de artículos
 
-Ejemplos: `fuga en tubo de agua fria de 1/2 pulgada`; `pintura interior lavable blanca en galon`; `repisa en concreto, necesito taladro y broca`.
+![Maestro de artículos](capturas/02-articulos.png)
 
-La IA solo recomienda articulos activos con existencia. Es orientativa; un tecnico debe validar trabajos de electricidad, gas, estructura o riesgo.
+### Crear un artículo
 
-## 9. Portal de clientes
+1. Abre **Maestro de artículos**.
+2. Completa SKU, código de barras, nombre y categoría.
+3. Registra descripción técnica, marca, unidad, ubicación y proveedor.
+4. Define costo, precio, ITBIS, stock y stock mínimo.
+5. Mantén marcada la casilla de artículo activo.
+6. Pulsa **Guardar artículo**.
 
-Abre `/catalog`. Tiene dos pantallas.
+### Editar o desactivar
 
-### Preordenar productos
+Usa el buscador y pulsa **Editar**. Guarda los cambios después de revisar precio e inventario. Para conservar historial, desactiva el artículo en lugar de borrarlo.
 
-Busca por producto, uso o SKU; filtra por categoria; revisa stock y precio; pulsa **Agregar**; revisa el resumen; selecciona e-CF 32 o e-CF 31; completa datos y problematica; consulta RNC/cedula si es e-CF 31; pulsa **Enviar preorden al negocio**.
+Cada cambio de existencia genera un movimiento de inventario.
 
-La preorden queda sujeta a confirmacion de disponibilidad y precio por el negocio.
+## 6. Clientes
 
-### Asesor IA local
+![Módulo de clientes](capturas/03-clientes.png)
 
-Cambia a **Asesor IA local**, describe el problema, responde preguntas tecnicas, revisa compatibilidad y agrega productos a la seleccion. Luego continua con la preorden y envia la solicitud.
+1. Abre **Clientes**.
+2. Escribe RNC o cédula y usa **Consultar** cuando corresponda.
+3. Verifica nombre, teléfono, correo, dirección y actividad.
+4. Pulsa **Guardar cliente**.
 
-## 10. Gestion Fiscal e IMECF
+En el directorio:
 
-En **Gestion Fiscal**, el administrador puede consultar empresa, espacio, RNC y ambiente; validar emisor en DGII; probar conexion sin emitir; activar empresa; consultar documentos; filtrar estados; consultar estado y trackId; descargar XML firmado y emitir notas e-CF 34.
+- **Editar** carga el registro en el formulario.
+- **Usar en venta** lo selecciona en el mostrador.
+- **Eliminar** lo retira cuando las relaciones existentes lo permiten.
 
-Flujo obligatorio: guardar credenciales -> validar emisor -> probar conexion -> activar empresa.
+Evita duplicar clientes y confirma el RNC antes de emitir un e-CF 31.
 
-## 11. Facturas, tracking y token
+## 7. Proveedores
 
-Una factura puede guardar ID remoto, e-NCF, estado y `trackId`.
+![Módulo de proveedores](capturas/04-proveedores.png)
 
-Para demostrar tracking: emite en ambiente de prueba; abre **Facturas**; busca por e-NCF o cliente; consulta estado/tracking; muestra estado, fecha y trackId devueltos. Si el flujo genera un token publico, se consulta en `/api/public/tracking/<TOKEN>`.
+Registra razón social, RNC, contacto, teléfono, correo, dirección, actividad y notas. Usa **Editar** para mantener el registro y **Eliminar** cuando ya no se utilice. El módulo sirve como directorio para abastecimiento; no crea cuentas por pagar.
 
-No publiques API keys, cookies ni tokens reales. En una defensa academica muestra solo un token de prueba parcialmente oculto y explica que sirve para consultar estado, no para editar la factura.
+## 8. Pre-facturas
 
-## 12. Reportes y control diario
+![Pre-facturas guardadas](capturas/05-prefacturas.png)
 
-Revisa ventas del dia, pre-facturas pendientes, documentos con error, stock critico y documentos sin tracking. Usa filtros y paginacion.
+En **Pre-Facturas** se reúnen los borradores creados en el POS.
 
-## 13. Buenas practicas
+1. Busca por cliente, referencia o estado.
+2. Pulsa **Abrir** o **Revisar** para inspeccionar el contenido.
+3. Usa **Cargar en ventas** para completar o modificar la operación.
+4. Verifica stock, precios, descuentos, cliente, e-CF y pago.
+5. Emite únicamente después de confirmar toda la información.
 
-- No compartas contrasenas, API keys ni la clave maestra.
-- Cierra sesion en equipos compartidos.
-- Revisa RNC antes de e-CF 31.
-- No confundas pre-factura con factura fiscal.
-- Verifica stock antes de prometer disponibilidad.
-- Haz copias de seguridad.
-- No cambies `AHG_CREDENTIAL_SECRET` sin plan de migracion.
-- Valida tecnicamente cualquier recomendacion de IA.
+La paginación evita cargar el historial completo en una sola consulta.
 
-## 14. Errores frecuentes
+## 9. Asistente IA local
 
-- **IMECF sin configurar:** verifica API key, empresa habilitada, validacion y prueba de conexion.
-- **Credencial no se puede descifrar:** usa la misma clave maestra con la que se guardo o vuelve a guardar la credencial.
-- **No hay recomendaciones:** describe medidas y material, responde filtros y verifica stock activo.
-- **No puedo emitir e-CF 31:** completa y valida RNC/cedula, nombre y direccion fiscal.
-- **La preorden no aparece:** pulsa **Actualizar** y confirma que portal y POS usan la misma base.
+![Asistente IA del POS](capturas/06-asistente-ia.png)
 
-## 15. Flujo completo
+1. Abre **Asistente IA**.
+2. Describe el trabajo o problema.
+3. Incluye material, medida, ubicación, cantidad y presupuesto cuando los conozcas.
+4. Pulsa **Analizar necesidad**.
+5. Responde preguntas de seguimiento.
+6. Revisa coincidencia, uso sugerido, precio y existencia.
+7. Agrega al carrito solamente los artículos confirmados.
 
-Portal cliente -> IA local -> seleccion -> preorden -> revision POS -> validacion comprador -> confirmacion precio/stock -> emision e-CF -> consulta estado -> tracking y XML.
+El motor consulta productos activos y disponibles. La recomendación es orientativa y debe ser validada por el vendedor o técnico.
+
+## 10. Inventario
+
+![Control de inventario](capturas/07-inventario.png)
+
+**Stock crítico** identifica artículos por debajo del mínimo. Desde el módulo se revisan cantidades y se corrigen existencias mediante el maestro de artículos.
+
+Buenas prácticas:
+
+- Registra entradas por recepción de mercancía.
+- Registra salidas por merma o ajuste autorizado.
+- Escribe una referencia o motivo comprensible.
+- Compara periódicamente el sistema con el conteo físico.
+- Revisa el dashboard después de cada ajuste importante.
+
+## 11. Gestión Fiscal e IMECF
+
+![Gestión Fiscal e IMECF](capturas/08-gestion-fiscal.png)
+
+La pantalla muestra salud, secuencias, proveedor, documentos y notas de crédito.
+
+### Consultar documentos
+
+1. Abre **Gestión Fiscal**.
+2. Filtra por estado o e-NCF.
+3. Usa **Consultar estado** para actualizar el resultado remoto.
+4. Usa **Tracking** para consultar el seguimiento DGII.
+5. Descarga el XML firmado cuando esté disponible.
+
+### Emitir una nota de crédito e-CF 34
+
+1. Selecciona la factura original aceptada.
+2. Elige el código de modificación.
+3. Escribe el motivo de la devolución o corrección.
+4. Revisa el vencimiento calculado.
+5. Pulsa **Emitir E34**.
+6. Confirma que IMECF devuelva estado aceptado.
+
+### Configurar empresa fiscal
+
+Solo un administrador con permiso fiscal puede guardar credenciales. El flujo es: guardar empresa -> validar emisor -> probar conexión -> activar.
+
+No publiques claves IMECF en capturas, manuales o GitHub.
+
+## 12. Facturas y comprobantes
+
+![Facturas y documentos](capturas/09-facturas.png)
+
+1. Abre **Facturas**.
+2. Busca por e-NCF, cliente o referencia.
+3. Pulsa **Revisar** para abrir el comprobante.
+4. Verifica emisor, comprador, líneas, descuentos, ITBIS, forma de pago y total.
+5. Usa la consulta DGII o el QR disponible.
+6. Consulta estado, tracking o XML cuando la integración lo permita.
+7. Imprime o entrega el documento generado.
+
+En pagos mixtos, la vista previa muestra cada medio y su importe. Las notas de crédito aparecen como una forma de pago independiente.
+
+## 13. Cuadre de caja
+
+![Cuadre de caja](capturas/10-cuadre-caja.png)
+
+### Abrir turno
+
+1. Abre **Cuadre de caja**.
+2. Escribe el fondo inicial.
+3. Agrega una nota de apertura si es necesaria.
+4. Pulsa **Abrir caja**.
+
+### Durante el turno
+
+- Registra una **Entrada** para dinero que entra sin factura.
+- Registra una **Salida** para gastos o retiros.
+- Escribe siempre el motivo.
+- Revisa el desglose por efectivo, tarjeta, transferencia, PayPal y nota de crédito.
+
+### Cerrar
+
+1. Cuenta el efectivo físico.
+2. Escribe el efectivo contado.
+3. Agrega la observación de cierre.
+4. Pulsa **Cerrar y cuadrar**.
+5. Revisa esperado, contado y diferencia.
+
+## 14. Auditoría
+
+![Auditoría de usuarios](capturas/11-auditoria.png)
+
+Auditoría muestra solamente acciones asociadas a usuarios: inicio de sesión, creación o modificación, ventas, movimientos y eliminaciones. Los eventos automáticos de triggers no se muestran.
+
+Usa el buscador para filtrar por usuario, acción, módulo o referencia. La información incluye fecha, usuario, acción, entidad y detalle.
+
+## 15. Administración y permisos
+
+![Administración de usuarios](capturas/12-administracion.png)
+
+### Crear usuario
+
+1. Abre **Administración**.
+2. Completa nombre, correo, teléfono, rol y contraseña inicial.
+3. Marca los módulos que podrá utilizar.
+4. Mantén **Usuario activo** marcado.
+5. Pulsa **Guardar usuario**.
+
+### Modificar acceso
+
+1. Busca el usuario en la lista.
+2. Pulsa **Editar accesos**.
+3. Marca o desmarca módulos.
+4. Guarda los cambios.
+
+Los módulos no autorizados desaparecen del menú y también quedan bloqueados en la API. El administrador conserva acceso completo.
+
+**Descargar backup** genera un respaldo JSON de las tablas. Guárdalo en una ubicación protegida.
+
+## 16. Portal Customer - preordenar productos
+
+![Portal Customer para preordenar](capturas/14-portal-preorden.png)
+
+1. Abre `/catalog`.
+2. En **Preordenar productos**, busca por nombre, uso o SKU.
+3. Filtra por categoría si es necesario.
+4. Pulsa **Agregar a prefactura**.
+5. Revisa cantidades y total estimado.
+6. Selecciona e-CF 32 o e-CF 31.
+7. Completa nombre y teléfono.
+8. Agrega correo si deseas recibir confirmación.
+9. El motivo o comentario es opcional.
+10. Pulsa **Enviar prefactura al negocio**.
+
+La confirmación por correo incluye el número de solicitud cuando el servicio de correo está configurado.
+
+## 17. Portal Customer - Asesor IA
+
+![Asesor IA del portal](capturas/15-portal-ia.png)
+
+1. Selecciona la pestaña **Asesor IA local**.
+2. Describe el problema con medidas y material.
+3. Envía la consulta y responde los filtros técnicos.
+4. Revisa productos recomendados y complementos.
+5. Agrega los artículos elegidos a la preorden.
+6. Regresa al resumen y envía la solicitud.
+
+El asesor no modifica inventario ni emite facturas.
+
+## 18. Flujo diario recomendado
+
+1. Inicia sesión y revisa el dashboard.
+2. Abre caja si corresponde.
+3. Atiende solicitudes Customer y pre-facturas pendientes.
+4. Revisa stock crítico.
+5. Procesa ventas y pagos.
+6. Consulta notas vigentes antes de aceptar un vale.
+7. Revisa documentos fiscales por atender.
+8. Verifica facturas y estados.
+9. Cierra y cuadra la caja.
+10. Revisa Auditoría y genera respaldo cuando corresponda.
+
+## 19. Solución de problemas
+
+- **No aparece un módulo:** el administrador debe habilitarlo para tu usuario.
+- **No aparece una solicitud Customer:** pulsa **Actualizar** y confirma que portal y POS usan la misma base.
+- **No llega el correo:** verifica dirección, carpeta de spam y configuración Resend/SMTP.
+- **No se puede usar una nota:** confirma que está aceptada, vigente, con saldo y que seleccionaste cliente.
+- **Pagos no cuadran:** los medios deben sumar exactamente el monto restante.
+- **La tarjeta o PayPal no permite emitir:** completa primero la pasarela de prueba por el monto indicado.
+- **No se puede emitir e-CF 31:** consulta y completa RNC o cédula y datos fiscales.
+- **IMECF sin configurar:** revisa empresa activa, validación, prueba de conexión y credenciales.
+- **Documento rechazado:** abre Gestión Fiscal y revisa el diagnóstico del proveedor.
+- **Caja con diferencia:** revisa movimientos, efectivo inicial, pagos registrados y conteo físico.
+
+## 20. Seguridad
+
+- No compartas contraseñas ni claves de aplicaciones.
+- Cierra sesión en equipos compartidos.
+- Asigna a cada usuario solamente los módulos necesarios.
+- Revisa Auditoría periódicamente.
+- No publiques claves IMECF, `DATABASE_URL` ni secretos de correo.
+- Conserva respaldos y controla quién puede descargarlos.

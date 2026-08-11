@@ -1,231 +1,192 @@
-# Manual de instalacion - AHG CONSTRUFERRET POS
+# Manual de instalación - AHG CONSTRUFERRET POS
 
-Version 2.0 - julio de 2026
+Versión 3.0 - agosto de 2026
 
-> Este sistema es un proyecto académico. Vercel y Supabase se usan para publicar la demostración; ventas, pagos, datos, comprobantes e integraciones carecen de validez comercial o fiscal.
+Este documento explica cómo preparar el proyecto para desarrollo local y cómo publicarlo con Vercel y Supabase. Las integraciones fiscales y de pago se configuran exclusivamente en sus ambientes de prueba.
 
-## 1. Arquitectura recomendada
+## 1. Arquitectura
 
-La instalacion productiva utiliza:
+La solución utiliza:
 
-- **Vercel** para publicar el POS, el portal de clientes, la IA local y las rutas API.
-- **Supabase PostgreSQL** para conservar productos, clientes, inventario, pre-facturas, facturas y tracking.
-- **IMECF** para la integracion de comprobantes electronicos en ambiente de prueba.
+- **Vercel:** aplicación web, portal Customer y rutas API.
+- **Supabase PostgreSQL:** datos compartidos y persistentes.
+- **GitHub:** control de versiones y despliegues.
+- **Resend o Gmail SMTP:** confirmaciones de pre-facturas.
+- **IMECF TESTeCF:** transmisión académica de comprobantes electrónicos.
 
-El repositorio incluye `vercel.json`, `api/index.py`, `schema/postgres.sql` y `requirements.txt`. SQLite queda reservado para desarrollo local; no debe usarse como base compartida en Vercel porque sus escrituras no son persistentes entre ejecuciones serverless.
-
-Hay dos formas soportadas:
-
-| Forma | Uso | Base de datos | URL |
-|---|---|---|---|
-| Local | Desarrollo, pruebas y demostracion | SQLite en `data/ahg_demo.db` | `http://127.0.0.1:8765` |
-| Vercel | Uso remoto multiusuario | Supabase PostgreSQL Pooler IPv4 | `https://ahg-construferret-pos.vercel.app` |
-
-La instalacion local no reemplaza la productiva: cada una puede tener su propia base y sus propias variables. Para trabajar con los mismos datos desde cualquier lugar se debe usar la ruta Vercel + Supabase.
+SQLite se utiliza solamente en desarrollo local. En Vercel se debe configurar PostgreSQL porque el almacenamiento local de una función no es persistente.
 
 ## 2. Requisitos
 
+- Git.
+- Python 3.12 o superior.
 - Cuenta de GitHub con acceso al repositorio.
-- Cuenta de Vercel con el proyecto `ahg-construferret-pos`.
-- Proyecto de Supabase y su contraseña de base de datos.
-- Python 3.12 o superior para ejecución local.
-- Git y navegador moderno.
-- Vercel CLI solo si se desea desplegar desde PowerShell.
+- Proyecto de Vercel.
+- Proyecto de Supabase con acceso al Pooler IPv4.
+- Navegador actualizado.
+- Vercel CLI, opcional para administrar despliegues desde PowerShell.
 
-## 3. Instalacion local
+## 3. Descargar el proyecto
 
-Clona el repositorio y entra en la carpeta:
+En PowerShell:
 
-    git clone https://github.com/raulemanuel9697-dev/ahg-construferret-pos.git
-    cd ahg-construferret-pos
+    git clone https://github.com/SharkzZzin/ahg-construferret-pos-actualizado.git
+    cd ahg-construferret-pos-actualizado
+    git switch agent/pos-updated-20260727
 
-Instala dependencias:
+Para actualizar una copia existente:
+
+    git fetch origin
+    git switch agent/pos-updated-20260727
+    git pull --ff-only
+
+## 4. Preparar el entorno local
+
+Crear y activar el entorno virtual:
 
     python -m venv .venv
     .\.venv\Scripts\Activate.ps1
     python -m pip install --upgrade pip
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
 
-Si PowerShell bloquea la activacion, ejecuta `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` y repite la activacion.
-
-## 4. Ejecutar en SQLite local
-
-Para desarrollo y demostraciones:
+Iniciar la aplicación:
 
     $env:PYTHONPATH="$PWD\src"
-    $env:AHG_DEMO_MODE="1"
-    $env:AHG_HOST="127.0.0.1"
-    $env:AHG_PORT="8765"
-    $env:AHG_AUTH_SECURE_COOKIE="0"
     python -m ahg_pos.app
 
-Direcciones locales:
+Abrir `http://127.0.0.1:8765/`. Si no se define `DATABASE_URL`, se crea una base SQLite local en `data/ahg_demo.db`.
 
-- POS: `http://127.0.0.1:8765/`
-- Login: `http://127.0.0.1:8765/login`
-- Portal cliente: `http://127.0.0.1:8765/catalog`
+## 5. Preparar Supabase
 
-El correo de confirmación de prefacturas requiere `RESEND_API_KEY` y `EMAIL_FROM`
-con un remitente verificado en Resend. También admite SMTP mediante `SMTP_HOST`,
-`SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` y `SMTP_USE_TLS`.
+1. Crea o abre el proyecto de Supabase.
+2. En **Connect**, selecciona la cadena PostgreSQL del **Transaction Pooler** compatible con IPv4.
+3. Reemplaza la contraseña en la cadena.
+4. Conserva activado SSL con `sslmode=require`.
+5. Ejecuta `schema/postgres.sql` en el SQL Editor si la base todavía no tiene el esquema.
 
-SQLite crea `data/ahg_demo.db` y carga datos de demostracion cuando esta vacia. El acceso inicial es `admin@ahg.local` con `Cambiar123!`; cambia esa contraseña antes de entregar el sistema.
+Ejemplo de formato:
 
-### IA local opcional
+    postgresql://usuario:CONTRASENA@host-pooler:6543/postgres?sslmode=require
 
-Para mejorar las preguntas y explicaciones sin pagar tokens, instala Ollama en la computadora donde corre el POS y descarga un modelo local:
+No publiques esta cadena ni la guardes en Git.
 
-    ollama pull qwen3:1.7b
+## 6. Variables de entorno
 
-Luego define:
+Registra las variables en **Vercel > Project > Settings > Environment Variables**. Aplica los valores necesarios a Production, Preview y Development según el uso.
 
-    $env:OLLAMA_ENABLED="1"
-    $env:OLLAMA_BASE_URL="http://127.0.0.1:11434"
-    $env:OLLAMA_MODEL="qwen3:1.7b"
+Variables principales:
 
-El motor de reglas sigue controlando productos, stock, precios y filtros. Si Ollama no esta instalado o no responde, la aplicacion usa automaticamente el recomendador deterministico y no se interrumpe.
+- `DATABASE_URL`: cadena PostgreSQL de Supabase.
+- `SECRET_KEY`: secreto largo y aleatorio para sesiones.
+- `PUBLIC_BASE_URL`: `https://ahg-construferret-pos.vercel.app`.
+- `PAYMENT_MODE`: modo de prueba configurado para el proyecto.
+- `PAYPAL_CLIENT_ID` y `PAYPAL_CLIENT_SECRET`: credenciales sandbox si PayPal está habilitado.
+- `PAYPAL_MODE`: `sandbox`.
 
-## 5. Clave maestra local
+Correo mediante Resend:
 
-Las credenciales IMECF se cifran con `AHG_CREDENTIAL_SECRET`. Genera una clave aleatoria y dejala persistente:
+- `RESEND_API_KEY`.
+- `EMAIL_FROM`: remitente verificado.
 
-    $bytes = New-Object byte[] 48
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $rng.GetBytes($bytes)
-    $rng.Dispose()
-    $secret = [Convert]::ToBase64String($bytes)
-    [Environment]::SetEnvironmentVariable("AHG_CREDENTIAL_SECRET", $secret, "User")
-    $env:AHG_CREDENTIAL_SECRET = $secret
+Correo mediante Gmail SMTP, como alternativa:
 
-No publiques la clave y no la cambies despues de guardar credenciales. En Vercel esta clave debe configurarse como variable sensible independiente.
+- `SMTP_HOST`: `smtp.gmail.com`.
+- `SMTP_PORT`: `587`.
+- `SMTP_USER`: cuenta Gmail remitente.
+- `SMTP_PASSWORD`: contraseña de aplicación de Google, sin espacios.
+- `SMTP_USE_TLS`: `true`.
+- `EMAIL_FROM`: cuenta Gmail remitente.
 
-## 6. Configurar Supabase
+IMECF:
 
-1. Abre el proyecto de Supabase.
-2. Entra a **Project Settings -> Database -> Connect**.
-3. Selecciona **Session pooler** y copia la cadena PostgreSQL.
-4. Usa el host `aws-0-<region>.pooler.supabase.com`, el usuario `postgres.<PROJECT_REF>` y el puerto de Session pooler.
-5. Sustituye la contraseña en la cadena sin compartirla en GitHub.
+- Registra en el módulo **Gestión Fiscal** las credenciales y URL suministradas para TESTeCF.
+- Usa únicamente la URL de prueba.
+- Verifica la conexión antes de emitir.
+- Nunca guardes tokens o secretos en el repositorio.
 
-El proyecto actual usa el ref `mytxighyegsqyoqxkuzg`. La variable final debe llamarse `DATABASE_URL` y comenzar con `postgresql://`. Se recomienda Session pooler porque Vercel necesita un endpoint IPv4 compatible con funciones serverless.
+## 7. Vincular y desplegar en Vercel
 
-El esquema se crea automaticamente al iniciar el POS. La primera ejecucion crea tablas, referencias, usuario administrador y productos demo si la base esta vacia. Para una carga controlada, ejecuta el contenido de `schema/postgres.sql` desde el SQL Editor de Supabase antes de iniciar.
+Desde la carpeta del proyecto:
 
-## 7. Enlazar Vercel
+    vercel login
+    vercel link
+    vercel env pull .env.local
+    vercel --prod
 
-Instala Vercel CLI si no esta disponible:
+Al vincular, selecciona el equipo y el proyecto `ahg-construferret-pos`. También puede conectarse el repositorio desde el panel de Vercel para desplegar automáticamente cada actualización de la rama configurada.
 
-    npm.cmd install -g vercel
-    vercel.cmd login
+Después del despliegue:
 
-En la raiz del proyecto:
+1. Abre `https://ahg-construferret-pos.vercel.app/`.
+2. Inicia sesión y confirma que aparece el dashboard.
+3. Revisa que no existan errores en los Runtime Logs de Vercel.
+4. Confirma que ventas, solicitudes Customer e inventario usan la misma base.
 
-    vercel.cmd link --project ahg-construferret-pos
+## 8. Inicialización y seguridad
 
-El archivo `vercel.json` redirige las rutas web y API al handler Python `api/index.py`. Vercel detecta la clase `handler` y construye las dependencias desde `requirements.txt`.
+En la primera instalación, cambia inmediatamente cualquier contraseña inicial. Después:
 
-## 8. Variables de Vercel
+1. Crea un usuario administrador nominal.
+2. Asigna módulos desde **Administración**.
+3. Restringe Auditoría, Administración, Gestión Fiscal y respaldos.
+4. Cierra y vuelve a iniciar sesión con cada perfil de prueba.
+5. Verifica que el menú y las API respeten los módulos permitidos.
 
-Configura las siguientes variables en **Production** y, si se necesita, también en **Preview**:
+No compartas `DATABASE_URL`, `SECRET_KEY`, contraseñas de aplicación, credenciales fiscales ni claves de pago.
 
-    DATABASE_URL=<cadena Session pooler de Supabase>
-    AHG_CREDENTIAL_SECRET=<secreto aleatorio largo>
-    AHG_ACADEMIC_MODE=1
-    AHG_DEMO_MODE=0
-    AHG_AUTH_SECURE_COOKIE=1
-    IMECF_BASE_URL=https://ecf-platform-backend-50801509587.us-central1.run.app
-    IMECF_COMPANY_ID=<id de la empresa IMECF>
-    IMECF_ENABLED=1
-    IMECF_API_KEY=<clave de prueba IMECF>
-    PAYPAL_ENVIRONMENT=sandbox
-    PAYPAL_NO_CHARGE=1
+## 9. Verificación funcional
 
-Las variables sensibles se agregan desde **Vercel -> Project -> Settings -> Environment Variables** o con `vercel env add`. Nunca guardes `DATABASE_URL`, `AHG_CREDENTIAL_SECRET` ni `IMECF_API_KEY` en `.env`, GitHub, capturas o documentos.
+Ejecuta las pruebas automatizadas:
 
-## 9. Desplegar a producción
+    $env:PYTHONPATH="$PWD\src"
+    python -m pytest -q
 
-Desde la raíz del repositorio:
+Lista mínima de verificación manual:
 
-    vercel.cmd pull --yes --environment production
-    vercel.cmd deploy --prod --yes
+- El dashboard carga indicadores sin errores.
+- Se puede crear una venta de contado.
+- Los pagos mixtos deben sumar exactamente el monto pendiente.
+- Una nota de crédito vigente puede cargarse y combinarse con otro medio.
+- El stock cambia una sola vez por operación.
+- Las solicitudes Customer aparecen en Pre-facturas.
+- La confirmación por correo se envía cuando se proporciona dirección.
+- Gestión Fiscal muestra respuesta y estado del proveedor de prueba.
+- Apertura, movimientos y cierre de caja cuadran.
+- Auditoría muestra acciones de usuarios, no eventos técnicos internos.
+- Un usuario restringido no puede abrir el módulo por menú ni por API.
 
-El dominio productivo actual es:
+## 10. Respaldo y recuperación
 
-    https://ahg-construferret-pos.vercel.app/
+Para la base compartida, usa las herramientas de respaldo de Supabase. Conserva copias en una ubicación protegida y prueba periódicamente su recuperación.
 
-Rutas principales:
+El respaldo descargable desde Administración se limita a usuarios autorizados. No uses una copia de `data/ahg_demo.db` como respaldo de producción cuando Vercel trabaja con Supabase.
 
-- `/login`: autenticacion administrativa.
-- `/`: POS.
-- `/catalog`: portal cliente para preorden y asesor IA local.
-- `/api/public/products`: catalogo publico con paginacion.
-- `/api/public/categories`: categorias disponibles.
+## 11. Actualizaciones
 
-## 10. Validacion posterior al despliegue
+Antes de actualizar:
 
-Comprueba:
+1. Verifica que el árbol de trabajo esté limpio.
+2. Realiza un respaldo de la base.
+3. Descarga los cambios con `git pull --ff-only`.
+4. Instala dependencias nuevas.
+5. Ejecuta todas las pruebas.
+6. Despliega y completa la lista de verificación funcional.
 
-1. La raiz redirige a `/login`.
-2. El login administrativo abre el POS.
-3. El catalogo muestra productos y categorias.
-4. La paginacion cambia de pagina sin perder filtros.
-5. El asesor IA responde usando el inventario de Supabase.
-6. Una preorden aparece en **Pre-Facturas**.
-7. El RNC se consulta cuando corresponde.
-8. **Gestion Fiscal** muestra la empresa IMECF.
-9. **Validar emisor** y **Probar conexion** responden correctamente.
-10. Una factura de prueba conserva su e-NCF, estado y tracking.
+Si el cambio modifica el esquema, ejecuta primero la migración prevista y no elimines columnas o datos sin una copia comprobada.
 
-Para revisar errores de despliegue:
+## 12. Solución de problemas
 
-    vercel.cmd logs ahg-construferret-pos.vercel.app
+- **Vercel no conecta con Supabase:** confirma Pooler IPv4, puerto, contraseña codificada y `sslmode=require`.
+- **El despliegue no refleja cambios:** verifica la rama conectada, el último commit y el alias de producción.
+- **No llega el correo:** revisa variables, remitente, contraseña de aplicación, spam y Runtime Logs.
+- **Customer y POS muestran datos diferentes:** ambos deben usar la misma `DATABASE_URL`.
+- **IMECF no responde:** prueba conexión, credenciales, URL TESTeCF y diagnóstico del documento.
+- **Un módulo sigue visible:** guarda permisos, cierra sesión y vuelve a entrar.
+- **La aplicación local no inicia:** activa `.venv`, reinstala dependencias y define `PYTHONPATH`.
 
-## 11. Configurar IMECF desde el POS
+## 13. Documentación relacionada
 
-1. Inicia sesion con rol `admin`.
-2. Abre **Gestion Fiscal**.
-3. Edita o crea la empresa.
-4. Completa workspace, razon social, RNC, ambiente y URLs.
-5. Pega la API key sin el prefijo `x-api-key:`.
-6. Confirma la contraseña administrativa y guarda.
-7. Pulsa **Validar emisor**.
-8. Pulsa **Probar conexion**.
-9. Pulsa **Activar** cuando las pruebas sean correctas.
-
-El modo académico fuerza ambiente `test`. No configures credenciales, pagos ni comprobantes reales.
-
-## 12. Copias de seguridad y seguridad
-
-- En Supabase configura copias y conserva el proyecto con acceso restringido.
-- No compartas la contraseña de la base, la clave maestra ni la API key IMECF.
-- Cambia la contraseña inicial del administrador.
-- No uses `AHG_DEMO_MODE=1` en producción.
-- Usa `AHG_AUTH_SECURE_COOKIE=1` en producción.
-- Revisa el log de Vercel después de cada cambio de esquema.
-- Para SQLite local conserva `data/ahg_demo.db` junto con su clave maestra.
-
-## 13. Solucion de problemas
-
-- **`No module named cryptography`**: ejecuta `pip install -r requirements.txt`.
-- **`Define AHG_CREDENTIAL_SECRET`**: define la clave del paso 5 o la variable sensible en Vercel.
-- **Error IPv6 al conectar Supabase**: usa Session pooler IPv4 y no el host directo `db.<ref>.supabase.co`.
-- **`IMECF sin configurar`**: verifica `IMECF_API_KEY`, empresa, ambiente, validacion y conexion.
-- **La preorden no aparece**: confirma que Vercel y el POS usan la misma `DATABASE_URL` de Supabase.
-- **Vercel responde 500**: ejecuta `vercel.cmd logs` y revisa tipos booleanos, credenciales y migraciones.
-- **`gcloud no se reconoce`**: instala Google Cloud CLI solo si necesitas administrar IMECF o servicios de GCP.
-
-## 14. Checklist de entrega
-
-- [ ] Repositorio descargado y dependencias instaladas.
-- [ ] SQLite local probado.
-- [ ] Proyecto Supabase creado y con contraseña disponible.
-- [ ] `DATABASE_URL` usa Session pooler IPv4.
-- [ ] Esquema PostgreSQL creado.
-- [ ] Variables sensibles configuradas en Vercel.
-- [ ] POS publicado en producción.
-- [ ] Portal cliente, IA y preorden probados.
-- [ ] Login administrativo probado.
-- [ ] IMECF validado en ambiente de prueba.
-- [ ] Tracking revisado.
-- [ ] Contraseña inicial cambiada.
-- [ ] Copias de seguridad y accesos restringidos.
+- `README.md`: presentación y referencia rápida del repositorio.
+- `docs/manuales/MANUAL_USUARIO.md`: operación completa con capturas.
+- `output/pdf/manual_usuario_ahg_construferret_pos.pdf`: manual de usuario imprimible.
+- `output/pdf/manual_instalacion_ahg_construferret_pos.pdf`: este manual en PDF.

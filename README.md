@@ -1,156 +1,182 @@
 # AHG CONSTRUFERRET POS
 
-Sistema academico en Python para el proyecto integrador: ventas, inventario, recomendaciones con IA/MCP y facturacion e-CF 31/32.
+Sistema web de punto de venta para ferretería, desarrollado en Python y publicado con Vercel y Supabase PostgreSQL. Integra catálogo público, pre-facturas, inventario, recomendaciones locales, comprobantes electrónicos de prueba, notas de crédito, pagos mixtos, cuadre de caja, auditoría y permisos por módulo.
 
-> **Alcance académico:** todas las ventas, preórdenes, consultas, pagos, comprobantes e-CF e integraciones se usan exclusivamente para demostración. Los comprobantes no tienen validez fiscal o comercial, PayPal permanece en Sandbox sin cargo e IMECF solo puede operar en ambiente de prueba.
+Aplicación publicada: https://ahg-construferret-pos.vercel.app/
 
-## Que incluye
+> Proyecto académico: las integraciones fiscales y de pago se ejecutan exclusivamente en ambientes de prueba.
 
-- Interfaz web moderna para mostrador, caja, asistente IA, inventario y reportes.
-- Maestro de articulos con alta, edicion, categorias, costos, precios, ITBIS,
-  inventario, estado, codigo de barras y datos tecnicos.
-- Base de datos preparada para PostgreSQL, con modo demo local sin instalar dependencias.
-- Busqueda por nombre, SKU, codigo de barras y lenguaje natural.
-- Recomendaciones con sinonimos tecnicos, errores ortograficos leves,
-  presupuesto y explicacion de coincidencias.
-- Servidor MCP por `stdio` con herramientas `buscar_articulos`, `recomendar_articulos` y `stock_critico`.
-- Facturador academico para e-CF 31 y e-CF 32 con e-NCF secuencial, ITBIS, XML interno y consulta de facturas.
-- Centro de Gestion Fiscal con salud, secuencias, proveedor IMECF, filtros,
-  consulta de estado, track DGII y descarga XML.
-- Registro de movimientos cuando el stock se ajusta desde el maestro.
+## Funciones principales
 
-## Ejecutar demo local
+- Dashboard inicial con ventas del día, pendientes, stock crítico, caja, notas vigentes, tendencia semanal y accesos rápidos.
+- Venta y pre-factura con e-CF 31/32, descuentos por línea y generales.
+- Pagos en efectivo, tarjeta, transferencia, PayPal Sandbox y combinaciones de varios medios.
+- Consulta, carga y aplicación de notas de crédito vigentes; permite nota de crédito más otro medio de pago.
+- Portal Customer para buscar productos, recibir orientación del asistente y enviar pre-facturas.
+- Confirmación por correo al cliente cuando proporciona una dirección válida.
+- Maestro de artículos, categorías, precios, ITBIS, costos, stock y mínimo.
+- Directorios de clientes y proveedores con consulta fiscal.
+- Inventario con existencias, alertas y movimientos.
+- Gestión fiscal con IMECF en TESTeCF, estados, tracking, XML y e-CF 34.
+- Facturas con vista previa, forma de pago, descuentos, QR y consulta DGII.
+- Cuadre de caja con apertura, movimientos, pagos, cierre y diferencia.
+- Auditoría limitada a acciones realizadas por usuarios.
+- Administración de usuarios con acceso individual por módulo y respaldo JSON.
+- Búsqueda y recomendación local por nombre, SKU, código de barras o necesidad.
 
-Desde PowerShell:
+## Arquitectura
+
+| Componente | Tecnología | Función |
+|---|---|---|
+| Aplicación | Python 3.12 | Servidor HTTP, reglas de negocio y API |
+| Interfaz | HTML, CSS y JavaScript | POS, dashboard y portal Customer |
+| Producción | Vercel Functions | Publicación web y API serverless |
+| Datos | Supabase PostgreSQL | Persistencia multiusuario |
+| Desarrollo | SQLite | Ejecución local y pruebas |
+| Fiscal | IMECF TESTeCF | Envío y consulta de documentos de prueba |
+| Correo | Resend o SMTP | Confirmación de pre-facturas |
+| Pago | PayPal Sandbox y simulador de tarjeta | Flujos académicos sin cargos reales |
+
+## Inicio rápido local
+
+En PowerShell:
 
 ```powershell
-cd "C:\Users\raule\Documents\Codex\2026-06-01\files-mentioned-by-the-user-proyecto\outputs\ahg_construferret_pos"
+git clone https://github.com/SharkzZzin/ahg-construferret-pos-actualizado.git
+cd ahg-construferret-pos-actualizado
+git switch agent/pos-updated-20260727
+
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+
 $env:PYTHONPATH="$PWD\src"
+$env:AHG_DEMO_MODE="1"
+$env:AHG_AUTH_SECURE_COOKIE="0"
 python -m ahg_pos.app
 ```
 
-Abre:
+Direcciones locales:
+
+- POS: http://127.0.0.1:8765/
+- Inicio de sesión: http://127.0.0.1:8765/login
+- Portal Customer: http://127.0.0.1:8765/catalog
+
+La primera ejecución crea `data/ahg_demo.db`. Las credenciales iniciales se definen con `AHG_ADMIN_EMAIL`, `AHG_ADMIN_PHONE` y `AHG_ADMIN_PASSWORD`; cambia cualquier contraseña de demostración antes de compartir el sistema.
+
+## Ejecutar las pruebas
+
+```powershell
+$env:PYTHONPATH="$PWD\src"
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+## Configuración de producción
+
+La aplicación productiva requiere una base PostgreSQL persistente. Para Vercel se recomienda la cadena Session Pooler IPv4 de Supabase.
+
+Variables principales:
 
 ```text
-http://127.0.0.1:8765
+DATABASE_URL=postgresql://...
+AHG_CREDENTIAL_SECRET=<secreto-largo>
+AHG_ACADEMIC_MODE=1
+AHG_DEMO_MODE=0
+AHG_AUTH_SECURE_COOKIE=1
+IMECF_BASE_URL=https://ecf-platform-backend-50801509587.us-central1.run.app
+IMECF_API_KEY=<clave-de-prueba>
+IMECF_ENABLED=1
+PAYPAL_ENVIRONMENT=sandbox
+PAYPAL_NO_CHARGE=1
 ```
 
-Portal público para clientes:
+Para correo con Resend:
 
 ```text
-http://127.0.0.1:8765/catalog
+RESEND_API_KEY=<clave>
+EMAIL_FROM=<remitente-verificado>
 ```
 
-El portal permite explorar artículos disponibles, buscar por problemática y conversar
-con el asesor IA autónomo. El asesor solo recomienda artículos activos con existencia,
-explica compatibilidad y puede añadir complementos a una lista de selección.
-
-Cuando el cliente indica su correo al enviar una prefactura, el sistema registra la
-solicitud y envía una confirmación con el número, los artículos y el total estimado.
-En Vercel configura `RESEND_API_KEY` y `EMAIL_FROM` usando un remitente verificado;
-como alternativa puedes usar `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
-`SMTP_PASSWORD` y `SMTP_USE_TLS`.
-
-Acceso inicial:
+Alternativa SMTP:
 
 ```text
-Correo: admin@ahg.local
-Contraseña: Cambiar123!
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=<correo>
+SMTP_PASSWORD=<contraseña-de-aplicación>
+SMTP_USE_TLS=1
+EMAIL_FROM=<correo-remitente>
 ```
 
-Puedes cambiar esas credenciales antes del primer inicio mediante
-`AHG_ADMIN_EMAIL`, `AHG_ADMIN_PHONE` y `AHG_ADMIN_PASSWORD`. El sistema guarda
-la contraseña con `scrypt`; nunca conserva el texto original.
+No publiques `.env`, `DATABASE_URL`, contraseñas, cookies, claves IMECF ni secretos de correo.
 
-Las variables de administrador solo se usan cuando la tabla de usuarios esta
-vacia. Cambiarlas despues de crear el primer usuario no modifica su contrasena.
-
-La demo crea `data/ahg_demo.db` con inventario inicial. Es util para presentar el prototipo sin configurar PostgreSQL.
-
-## Usar PostgreSQL
-
-1. Levanta PostgreSQL con Docker:
+## Despliegue en Vercel
 
 ```powershell
-docker compose up -d
+vercel.cmd login
+vercel.cmd link --project ahg-construferret-pos
+vercel.cmd pull --yes --environment production
+vercel.cmd deploy --prod --yes
 ```
 
-2. Instala el conector:
+`vercel.json` dirige las rutas al handler Python de `api/index.py`. El esquema se verifica al iniciar y se actualiza de forma compatible para SQLite y PostgreSQL.
+
+## Operación resumida
+
+1. Inicia sesión; el dashboard será la primera pantalla.
+2. Revisa pendientes, stock crítico, caja y documentos fiscales.
+3. Abre **Venta**, agrega productos y selecciona cliente y tipo de comprobante.
+4. Si usarás una nota, pulsa **Consultar notas vigentes** y luego **Cargar nota**.
+5. Selecciona el medio para el monto restante; usa **Dividir saldo restante** solo si habrá dos medios adicionales.
+6. Guarda una pre-factura o emite el comprobante de prueba.
+7. Consulta el documento en **Facturas** o **Gestión Fiscal**.
+8. Cierra el turno desde **Cuadre de caja**.
+
+## Permisos
+
+El dashboard está disponible para todo usuario autenticado. En **Administración**, un administrador elige qué módulos puede abrir cada usuario. La protección se aplica tanto en el menú como en la API.
+
+Perfiles iniciales sugeridos:
+
+- `admin`: acceso completo.
+- `gerente`: operación completa excepto Administración.
+- `cajero`: venta, clientes, pre-facturas, facturas y caja.
+- `vendedor`: venta, clientes, pre-facturas, asistente y facturas.
+- `almacen`: artículos, proveedores e inventario.
+
+## Documentación
+
+- [Manual de usuario](docs/manuales/MANUAL_USUARIO.md)
+- [Manual de instalación](docs/manuales/MANUAL_INSTALACION.md)
+- [Manual de usuario PDF](output/pdf/manual_usuario_ahg_construferret_pos.pdf)
+- [Manual de instalación PDF](output/pdf/manual_instalacion_ahg_construferret_pos.pdf)
+- [Integración IMECF](INTEGRACION_IMECF.md)
+
+Para regenerar los PDF:
 
 ```powershell
-pip install -r requirements.txt
+python scripts/generate_manual_pdfs.py
 ```
 
-3. Ejecuta la app apuntando a PostgreSQL:
+## Estructura del repositorio
 
-```powershell
-$env:DATABASE_URL="postgresql://postgres:postgres@localhost:5432/ahg_pos"
-$env:PYTHONPATH="$PWD\src"
-python -m ahg_pos.app
+```text
+api/                         Entrada para Vercel
+docs/manuales/               Manuales y capturas
+output/pdf/                  Manuales PDF generados
+schema/                      Esquemas SQLite y PostgreSQL
+scripts/                     Generadores y utilidades
+src/ahg_pos/                 Aplicación y lógica de negocio
+src/ahg_pos/web/             Interfaces POS y Customer
+tests/                       Pruebas automatizadas
+vercel.json                  Configuración de despliegue
 ```
 
-La app crea tablas y datos demo automaticamente si la base esta vacia.
+## Seguridad y respaldo
 
-## Servidor MCP
-
-Comando para conectar desde un cliente MCP:
-
-```powershell
-cd "C:\Users\raule\Documents\Codex\2026-06-01\files-mentioned-by-the-user-proyecto\outputs\ahg_construferret_pos"
-$env:PYTHONPATH="$PWD\src"
-python -m ahg_pos.mcp_server
-```
-
-Herramientas disponibles:
-
-- `buscar_articulos`: busca productos por necesidad escrita en lenguaje natural.
-- `recomendar_articulos`: recomienda productos y devuelve la razon tecnica.
-- `stock_critico`: muestra articulos por debajo del minimo.
-
-## Integracion IMECF
-
-La integracion usa perfiles fiscales administrables. Cada empresa conserva su espacio
-IMECF, razon social, RNC, ambiente, URLs e API Key cifrada. La clave nunca se devuelve
-completa al navegador.
-
-La gestion de credenciales:
-
-- Solo esta disponible para usuarios con rol `admin`.
-- Exige confirmar la contrasena actual antes de guardar.
-- Invalida la activacion cuando se modifica una credencial.
-- Exige validar el emisor en DGII y probar la conexion antes de activar la empresa.
-- Permite registrar varias empresas, manteniendo una sola empresa fiscal activa.
-
-Para iniciar con IMECF:
-
-```powershell
-$env:IMECF_BASE_URL="https://ecf-platform-backend-50801509587.us-central1.run.app"
-$env:IMECF_API_KEY="TU_NUEVA_CLAVE"
-$env:IMECF_ENABLED="1"
-$env:PYTHONPATH="$PWD\src"
-python -m ahg_pos.app
-```
-
-Las variables IMECF se importan como perfil inicial cuando la base no tiene empresas
-fiscales. Despues, la configuracion se administra desde **Gestion Fiscal**.
-
-Funciones integradas:
-
-- Envio de e-CF mediante `POST /api/v1/ecf/send`.
-- Consulta de estado por ID.
-- Consulta del trackId en DGII.
-- Consulta por eNCF.
-- Listado paginado con filtros.
-- Descarga del XML firmado.
-
-La clave compartida previamente debe regenerarse porque quedo expuesta en un mensaje.
-
-## Alcance fiscal académico
-
-Este prototipo genera e-NCF con estructura académica `E` + tipo `31/32` + secuencia de 10 dígitos, calcula ITBIS y produce un XML interno para demostración. No debe configurarse para emitir comprobantes reales ni procesar pagos reales.
-
-Fuentes consultadas:
-
-- DGII, Tipos y estructura e-CF: https://dgii.gov.do/cicloContribuyente/facturacion/comprobantesFiscalesElectronicosE-CF/Paginas/TipoyEstructurae-CF.aspx/1000
-- DGII, Documentacion sobre e-CF: https://dgii.gov.do/cicloContribuyente/facturacion/comprobantesFiscalesElectronicosE-CF/Paginas/documentacionSobreE-CF.aspx
-- DGII, Formato Comprobante Fiscal Electronico v1.0: https://dgii.gov.do/cicloContribuyente/facturacion/comprobantesFiscalesElectronicosE-CF/Documentacin%20sobre%20eCF/Formatos%20XML/Formato%20Comprobante%20Fiscal%20Electr%C3%B3nico%20%28e-CF%29%20v1.0.pdf
+- Cambia las credenciales iniciales.
+- Configura permisos mínimos por usuario.
+- Conserva `AHG_CREDENTIAL_SECRET`; cambiarlo invalida credenciales cifradas existentes.
+- Usa el respaldo JSON de Administración y las copias de Supabase.
+- Revisa Auditoría y los logs de Vercel ante errores.
+- Mantén IMECF y PayPal únicamente en sus ambientes de prueba para este proyecto.

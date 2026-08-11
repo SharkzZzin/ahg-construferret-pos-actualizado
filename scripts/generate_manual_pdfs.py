@@ -105,7 +105,7 @@ def make_pdf(markdown_path: Path, pdf_path: Path) -> None:
                 story.append(Paragraph(inline_markup(text), title))
                 story.append(Paragraph("Guia practica para instalar, operar y mantener el sistema.", body))
                 story.append(Spacer(1, 20 * mm))
-                story.append(Paragraph("Version documentada: julio de 2026", body))
+                story.append(Paragraph("Versión documentada: agosto de 2026", body))
                 story.append(Spacer(1, 28 * mm))
                 story.append(Paragraph("AHG CONSTRUFERRET POS", h2))
                 story.append(Spacer(1, 8 * mm))
