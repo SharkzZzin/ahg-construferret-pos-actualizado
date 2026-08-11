@@ -42,6 +42,12 @@ class _CurrentPostgresDatabase(Database):
         self.schema_applied = True
 
 
+class _ExistingAuditPostgresDatabase(_CurrentPostgresDatabase):
+    def scalar(self, sql: str, params: tuple = ()):
+        self.statements.append((sql, params))
+        return True
+
+
 class AcademicModeTests(unittest.TestCase):
     def test_academic_mode_forces_test_integrations(self) -> None:
         self.assertTrue(settings.academic_mode)
@@ -97,6 +103,16 @@ class AcademicModeTests(unittest.TestCase):
         self.assertEqual(database.statements[0], ("SELECT pg_advisory_lock(?)", (POSTGRES_SCHEMA_LOCK_ID,)))
         self.assertEqual(database.statements[-1], ("SELECT pg_advisory_unlock(?)", (POSTGRES_SCHEMA_LOCK_ID,)))
         self.assertEqual(database.conn.commits, 2)
+
+    def test_existing_postgres_audit_objects_are_not_recreated(self) -> None:
+        database = _ExistingAuditPostgresDatabase()
+
+        database.ensure_audit_triggers()
+
+        executed_sql = "\n".join(sql for sql, _ in database.statements)
+        self.assertNotIn("CREATE FUNCTION", executed_sql)
+        self.assertNotIn("CREATE TRIGGER", executed_sql)
+        self.assertNotIn("DROP TRIGGER", executed_sql)
 
 
 if __name__ == "__main__":

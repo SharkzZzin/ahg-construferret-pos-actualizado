@@ -327,19 +327,48 @@ class Database:
                 """CREATE TRIGGER IF NOT EXISTS audit_public_quote_insert AFTER INSERT ON public_quote_requests BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'pre-factura pública', NEW.id, json_object('customer_name', NEW.customer_name, 'email', NEW.email, 'total', NEW.total), datetime('now')); END""",
             ]
         else:
-            self.execute(
-                """
-                CREATE OR REPLACE FUNCTION audit_row_change() RETURNS trigger AS $$
-                BEGIN
-                    INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at)
-                    VALUES (NULL, 'TRIGGER ' || TG_OP, TG_TABLE_NAME, COALESCE((CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END)::text, ''), '{}'::text, NOW());
-                    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
-                END; $$ LANGUAGE plpgsql;
-                """
+            function_exists = bool(
+                self.scalar(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_proc procedure
+                        JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+                        WHERE procedure.proname = ? AND namespace.nspname = current_schema()
+                    )
+                    """,
+                    ("audit_row_change",),
+                )
             )
+            if not function_exists:
+                self.execute(
+                    """
+                    CREATE FUNCTION audit_row_change() RETURNS trigger AS $$
+                    BEGIN
+                        INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at)
+                        VALUES (NULL, 'TRIGGER ' || TG_OP, TG_TABLE_NAME, COALESCE((CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END)::text, ''), '{}'::text, NOW());
+                        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+                    END; $$ LANGUAGE plpgsql;
+                    """
+                )
             for table in ("products", "clients", "invoices", "preinvoices", "users", "public_quote_requests"):
-                self.execute(f"DROP TRIGGER IF EXISTS audit_{table}_change ON {table}")
-                self.execute(f"CREATE TRIGGER audit_{table}_change AFTER INSERT OR UPDATE OR DELETE ON {table} FOR EACH ROW EXECUTE FUNCTION audit_row_change()")
+                trigger_name = f"audit_{table}_change"
+                trigger_exists = bool(
+                    self.scalar(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_trigger
+                            WHERE tgname = ? AND tgrelid = to_regclass(?) AND NOT tgisinternal
+                        )
+                        """,
+                        (trigger_name, table),
+                    )
+                )
+                if not trigger_exists:
+                    self.execute(
+                        f"CREATE TRIGGER {trigger_name} AFTER INSERT OR UPDATE OR DELETE ON {table} "
+                        "FOR EACH ROW EXECUTE FUNCTION audit_row_change()"
+                    )
         self.conn.commit()
 
     def ensure_product_columns(self) -> None:
