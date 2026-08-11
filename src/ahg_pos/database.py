@@ -108,6 +108,10 @@ def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float 
     }
 
 
+POSTGRES_SCHEMA_LOCK_ID = 2026081001
+POSTGRES_SCHEMA_VERSION = "2026-08-10-academic-v1"
+
+
 class Database:
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or settings.database_url
@@ -143,6 +147,26 @@ class Database:
             self.conn = None
 
     def ensure_schema(self) -> None:
+        schema_lock_acquired = False
+        if self.kind == "postgres":
+            self.execute("SELECT pg_advisory_lock(?)", (POSTGRES_SCHEMA_LOCK_ID,))
+            self.conn.commit()
+            schema_lock_acquired = True
+        try:
+            if self.kind == "postgres" and self.postgres_schema_is_current():
+                return
+            self.apply_schema()
+            if self.kind == "postgres":
+                self.mark_postgres_schema_current()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            if schema_lock_acquired:
+                self.execute("SELECT pg_advisory_unlock(?)", (POSTGRES_SCHEMA_LOCK_ID,))
+                self.conn.commit()
+
+    def apply_schema(self) -> None:
         schema_name = "postgres.sql" if self.kind == "postgres" else "sqlite.sql"
         schema = (SCHEMA_DIR / schema_name).read_text(encoding="utf-8")
         if self.kind == "sqlite":
@@ -162,6 +186,34 @@ class Database:
         self.ensure_reference_data()
         self.ensure_initial_admin()
         self.ensure_initial_fiscal_company()
+
+    def postgres_schema_is_current(self) -> bool:
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ahg_schema_state (
+                name TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        self.conn.commit()
+        return self.scalar(
+            "SELECT version FROM ahg_schema_state WHERE name = ?",
+            ("application",),
+        ) == POSTGRES_SCHEMA_VERSION
+
+    def mark_postgres_schema_current(self) -> None:
+        self.execute(
+            """
+            INSERT INTO ahg_schema_state(name, version, updated_at)
+            VALUES (?, ?, NOW())
+            ON CONFLICT(name) DO UPDATE
+            SET version = EXCLUDED.version, updated_at = EXCLUDED.updated_at
+            """,
+            ("application", POSTGRES_SCHEMA_VERSION),
+        )
+        self.conn.commit()
 
     def ensure_tracking_table(self) -> None:
         self.execute(
