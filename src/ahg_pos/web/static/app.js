@@ -277,7 +277,7 @@ async function refreshWebRequests() {
   $("#web-request-list").innerHTML = state.webRequests.map((request) => `
     <article class="preinvoice-card">
       <div><div class="document-title"><strong>Solicitud #${request.id} · ${escapeHtml(request.customer_name)}</strong><span class="badge warning">${escapeHtml(request.status)}</span></div>
-      <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Problema:</strong> ${escapeHtml(request.problem)}</p>
+      <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Motivo:</strong> ${escapeHtml(request.problem||"No indicado")}</p>
       <span>${request.items.length} artículos · ${formatDate(request.created_at)}</span></div>
       <div><strong>${money.format(request.total)}</strong><br/><small>${request.items.map((item) => `${escapeHtml(item.name)} x${item.quantity}`).join(", ")}</small></div>
     </article>`).join("") || `<div class="empty-state">No hay solicitudes del catálogo.</div>`;

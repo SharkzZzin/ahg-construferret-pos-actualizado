@@ -28,9 +28,12 @@ function toggleFiscalFields(){const fiscal=$("#customer-ecf-type").value==="31";
 async function lookupCustomerTaxpayer(){const input=$("#customer-rnc"),digits=input.value.replace(/\D/g,""),box=$("#taxpayer-result");if(![9,11].includes(digits.length)){box.className="text-danger small";box.textContent="Escribe un RNC de 9 dígitos o una cédula de 11.";return}const button=$("#lookup-customer-rnc");button.disabled=true;button.textContent="Consultando...";try{const r=await fetch(`/api/public/taxpayer?value=${encodeURIComponent(digits)}`),data=await r.json();if(!r.ok)throw Error(data.error||"No se pudo consultar el contribuyente.");const name=data.nombre||data.nombreComercial||data.razonSocial||data.razon_social||data.name||data.legalName||"";$("#customer-name").value=name;box.className="text-success small";box.textContent=name?`Contribuyente encontrado: ${name}`:"RNC consultado correctamente."}catch(e){box.className="text-danger small";box.textContent=e.message}finally{button.disabled=false;button.textContent="Consultar RNC / cédula"}}
 async function sendQuoteRequest(){
   const result=$("#quote-result"),button=$("#send-quote-request"),ecfType=$("#customer-ecf-type").value,rnc=$("#customer-rnc").value.replace(/\D/g,""),items=state.selection.filter(p=>Number(p.quantity)>0).map(p=>({product_id:p.id,quantity:Number(p.quantity)})),payload={customer_name:$("#customer-name").value.trim(),phone:$("#customer-phone").value.trim(),email:$("#customer-email").value.trim(),problem:$("#customer-problem").value.trim(),items,fiscal:{ecf_type:ecfType,rnc_cedula:rnc,address:$("#customer-address").value.trim(),taxpayer_name:$("#customer-name").value.trim()}};
-  if(ecfType==="31"&&!([9,11].includes(rnc.length))){result.hidden=false;result.className="alert alert-warning mt-3 mb-0";result.textContent="Para e-CF 31 debes consultar y completar un RNC o cédula válido.";return}
-  if(!payload.customer_name||!payload.phone||payload.problem.length<5||!items.length){result.hidden=false;result.className="alert alert-warning mt-3 mb-0";result.textContent=`Completa tus datos, describe el problema y elige al menos un producto. Seleccionados: ${items.length}.`;return}
-  if(payload.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)){result.hidden=false;result.className="alert alert-warning mt-3 mb-0";result.textContent="Escribe un correo válido para recibir la confirmación.";return}
+  const warn=(message,field)=>{result.hidden=false;result.className="alert alert-warning mt-3 mb-0";result.textContent=message;field?.focus()};
+  if(ecfType==="31"&&!([9,11].includes(rnc.length))){warn("Para e-CF 31 debes consultar y completar un RNC o cédula válido.",$("#customer-rnc"));return}
+  if(payload.customer_name.length<2){warn("Escribe el nombre del cliente.",$("#customer-name"));return}
+  if(payload.phone.replace(/\D/g,"").length<7){warn("Escribe un número de teléfono válido.",$("#customer-phone"));return}
+  if(payload.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email)){warn("Escribe un correo válido para recibir la confirmación.",$("#customer-email"));return}
+  if(!items.length){warn("Elige al menos un producto para enviar la prefactura.");return}
   button.disabled=true;button.textContent="Enviando...";
   try{
     const r=await fetch("/api/public/quote-requests",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}),p=await r.json();
@@ -39,6 +42,6 @@ async function sendQuoteRequest(){
     if(p.email?.sent){result.className="alert alert-success mt-3 mb-0";result.textContent=`Prefactura #${p.request.id} recibida. Enviamos la confirmación a ${payload.email}.`;}
     else if(payload.email){result.className="alert alert-warning mt-3 mb-0";result.textContent=`Prefactura #${p.request.id} recibida. No pudimos enviar el correo de confirmación; verifica la dirección o contacta al negocio.`;}
     else{result.className="alert alert-success mt-3 mb-0";result.textContent=`Prefactura #${p.request.id} recibida correctamente.`;}
-  }catch(e){button.disabled=false;result.hidden=false;result.className="alert alert-danger mt-3 mb-0";result.textContent=e.message}
-  finally{button.textContent="Enviar prefactura al negocio";}
+  }catch(e){result.hidden=false;result.className="alert alert-danger mt-3 mb-0";result.textContent=e.message}
+  finally{button.disabled=false;button.textContent="Enviar prefactura al negocio";}
 }

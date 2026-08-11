@@ -370,8 +370,10 @@ class POSHandler(BaseHTTPRequestHandler):
                     raise ValueError("El tipo de comprobante debe ser e-CF 31 o e-CF 32.")
                 if ecf_type == "31" and len(rnc_cedula) not in {9, 11}:
                     raise ValueError("Para e-CF 31 el RNC o cédula es obligatorio y debe ser válido.")
-                if len(customer_name) < 2 or len(phone) < 7 or len(problem) < 5:
-                    raise ValueError("Indica nombre, teléfono y la problemática del cliente.")
+                if len(customer_name) < 2:
+                    raise ValueError("Indica el nombre del cliente.")
+                if len(phone) < 7:
+                    raise ValueError("Indica un teléfono válido.")
                 if email and not is_valid_email(email):
                     raise ValueError("Indica un correo electrónico válido para recibir la confirmación.")
                 quote = self.build_public_quote(payload.get("items") or [])

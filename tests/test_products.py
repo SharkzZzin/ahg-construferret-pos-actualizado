@@ -108,7 +108,7 @@ class ProductMasterTests(unittest.TestCase):
             "Cliente portal",
             "8095550199",
             "cliente@example.com",
-            "Necesita materiales para una reparación",
+            "",
             {
                 "lines": [{"product_id": "TEST-EMAIL", "name": "Producto de prueba", "quantity": 2}],
                 "subtotal": 100,
@@ -120,6 +120,7 @@ class ProductMasterTests(unittest.TestCase):
 
         self.assertGreater(int(saved["id"]), 0)
         self.assertEqual(saved["email"], "cliente@example.com")
+        self.assertEqual(saved["problem"], "")
         self.assertEqual(saved["items"][0]["quantity"], 2)
 
     def test_redeems_anonymous_e34_voucher_without_changing_new_invoice_total(self) -> None:
