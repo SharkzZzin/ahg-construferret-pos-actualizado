@@ -1098,8 +1098,10 @@ function renderCreditAvailability() {
   const clientId = Number($("#client-select")?.value || 0);
   const code = $("#credit-note-code")?.value.trim() || "";
   box.className = `credit-availability ${state.availableCredit > 0 ? "available" : ""}`;
-  if (!clientId && state.availableCreditNotes.length) {
-    box.textContent = `${state.availableCreditNotes.length} nota(s) vigente(s). Carga una para seleccionar su cliente y aplicarla.`;
+  if (!clientId && code && state.availableCredit > 0) {
+    box.textContent = `Nota ${code} cargada · saldo ${money.format(state.availableCredit)}. Selecciona el cliente que presenta el vale.`;
+  } else if (!clientId && state.availableCreditNotes.length) {
+    box.textContent = `${state.availableCreditNotes.length} nota(s) vigente(s). Carga una para aplicarla; si es de Consumidor Final, selecciona quién presenta el vale.`;
   } else if (!clientId) {
     box.textContent = code ? `No encontramos una nota vigente con el e-NCF ${code}.` : "Consulta las notas vigentes o selecciona un cliente registrado.";
   } else if (state.availableCredit > 0) {
