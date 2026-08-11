@@ -86,13 +86,12 @@ class AcademicModeTests(unittest.TestCase):
         self.assertNotIn("admin@ahg.local", login)
         self.assertIn("Proyecto Integrador UTESA", login)
 
-    def test_academic_notice_exists_on_all_public_surfaces(self) -> None:
-        login = (ROOT / "src" / "ahg_pos" / "web" / "login.html").read_text(encoding="utf-8")
+    def test_intrusive_academic_banners_are_not_shown(self) -> None:
         pos = (ROOT / "src" / "ahg_pos" / "web" / "index.html").read_text(encoding="utf-8")
         catalog = (ROOT / "src" / "ahg_pos" / "web" / "customer.html").read_text(encoding="utf-8")
-        self.assertIn("académic", login.lower())
-        self.assertIn("academic-banner", pos)
-        self.assertIn("academic-public-notice", catalog)
+        self.assertNotIn("academic-banner", pos)
+        self.assertNotIn("academic-public-notice", catalog)
+        self.assertIn("Simular comprobante", pos)
 
     def test_postgres_schema_setup_is_serialized_and_skips_current_version(self) -> None:
         database = _CurrentPostgresDatabase()

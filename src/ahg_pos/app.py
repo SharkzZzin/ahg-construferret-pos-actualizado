@@ -12,7 +12,7 @@ try:
     from .billing_api import FiscalCompanyConfig, IMECFClient, IMECFError, extract_document_metadata
     from .config import settings
     from .database import Database, DatabaseError
-    from .email_service import EmailDeliveryError, send_prefactura_confirmation
+    from .email_service import EmailDeliveryError, email_delivery_status, is_valid_email, send_prefactura_confirmation
     from .invoicing import build_ecf_xml, invoice_public_model
     from .local_ai import LocalAIUnavailable, consult_local_model
     from .paypal_api import PayPalClient
@@ -23,7 +23,7 @@ except ImportError:
     from ahg_pos.billing_api import FiscalCompanyConfig, IMECFClient, IMECFError, extract_document_metadata
     from ahg_pos.config import settings
     from ahg_pos.database import Database, DatabaseError
-    from ahg_pos.email_service import EmailDeliveryError, send_prefactura_confirmation
+    from ahg_pos.email_service import EmailDeliveryError, email_delivery_status, is_valid_email, send_prefactura_confirmation
     from ahg_pos.invoicing import build_ecf_xml, invoice_public_model
     from ahg_pos.local_ai import LocalAIUnavailable, consult_local_model
     from ahg_pos.paypal_api import PayPalClient
@@ -165,6 +165,7 @@ class POSHandler(BaseHTTPRequestHandler):
                         },
                         "user": self.current_user().public(),
                         "paypal": PayPalClient().public_config(),
+                        "email": email_delivery_status(),
                     }
                 )
             elif path == "/api/products":
@@ -340,6 +341,8 @@ class POSHandler(BaseHTTPRequestHandler):
                     raise ValueError("Para e-CF 31 el RNC o cédula es obligatorio y debe ser válido.")
                 if len(customer_name) < 2 or len(phone) < 7 or len(problem) < 5:
                     raise ValueError("Indica nombre, teléfono y la problemática del cliente.")
+                if email and not is_valid_email(email):
+                    raise ValueError("Indica un correo electrónico válido para recibir la confirmación.")
                 quote = self.build_public_quote(payload.get("items") or [])
                 fiscal["ecf_type"] = ecf_type
                 fiscal["rnc_cedula"] = rnc_cedula

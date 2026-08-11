@@ -103,6 +103,25 @@ class ProductMasterTests(unittest.TestCase):
         self.assertEqual(float(draft["total"]), 0)
         self.assertEqual(draft["status"], "borrador")
 
+    def test_public_quote_request_returns_saved_prefactura(self) -> None:
+        saved = self.db.save_public_quote_request(
+            "Cliente portal",
+            "8095550199",
+            "cliente@example.com",
+            "Necesita materiales para una reparación",
+            {
+                "lines": [{"product_id": "TEST-EMAIL", "name": "Producto de prueba", "quantity": 2}],
+                "subtotal": 100,
+                "tax": 18,
+                "total": 118,
+            },
+            {"ecf_type": "32"},
+        )
+
+        self.assertGreater(int(saved["id"]), 0)
+        self.assertEqual(saved["email"], "cliente@example.com")
+        self.assertEqual(saved["items"][0]["quantity"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

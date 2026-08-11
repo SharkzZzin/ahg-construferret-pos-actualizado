@@ -65,6 +65,10 @@ Direcciones locales:
 - Login: `http://127.0.0.1:8765/login`
 - Portal cliente: `http://127.0.0.1:8765/catalog`
 
+El correo de confirmación de prefacturas requiere `RESEND_API_KEY` y `EMAIL_FROM`
+con un remitente verificado en Resend. También admite SMTP mediante `SMTP_HOST`,
+`SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` y `SMTP_USE_TLS`.
+
 SQLite crea `data/ahg_demo.db` y carga datos de demostracion cuando esta vacia. El acceso inicial es `admin@ahg.local` con `Cambiar123!`; cambia esa contraseña antes de entregar el sistema.
 
 ### IA local opcional

@@ -21,20 +21,6 @@
   box-sizing: border-box;
 }
 
-.academic-banner {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-  padding: 9px 18px;
-  color: #684100;
-  background: #fff3cd;
-  border-bottom: 1px solid #efd38a;
-  font-size: 13px;
-  text-align: center;
-}
-
-.academic-banner strong { text-transform: uppercase; letter-spacing: .04em; }
-
 [hidden] {
   display: none !important;
 }

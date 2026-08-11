@@ -45,6 +45,12 @@ El portal permite explorar artículos disponibles, buscar por problemática y co
 con el asesor IA autónomo. El asesor solo recomienda artículos activos con existencia,
 explica compatibilidad y puede añadir complementos a una lista de selección.
 
+Cuando el cliente indica su correo al enviar una prefactura, el sistema registra la
+solicitud y envía una confirmación con el número, los artículos y el total estimado.
+En Vercel configura `RESEND_API_KEY` y `EMAIL_FROM` usando un remitente verificado;
+como alternativa puedes usar `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
+`SMTP_PASSWORD` y `SMTP_USE_TLS`.
+
 Acceso inicial:
 
 ```text

@@ -1569,6 +1569,8 @@ class Database:
             ),
         )
         self.conn.commit()
+        request_id = self.last_insert_id()
+        return self.get_public_quote_request(request_id)
 
     def list_users(self) -> list[dict[str, Any]]:
         return self.fetch_all(
@@ -1623,8 +1625,6 @@ class Database:
         for table in tables:
             data[table] = self.fetch_all(f'SELECT * FROM "{table}"')
         return {"format": "ahg-pos-backup-v1", "database": self.kind, "generated_at": self.now(), "tables": data}
-        request_id = self.last_insert_id()
-        return self.get_public_quote_request(request_id)
 
     def get_public_quote_request(self, request_id: int) -> dict[str, Any]:
         row = self.fetch_one("SELECT * FROM public_quote_requests WHERE id = ?", (request_id,))
