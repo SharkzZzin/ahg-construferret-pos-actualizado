@@ -35,6 +35,8 @@ const state = {
   supplierPagination: null,
   webRequests: [],
   auditPagination: null,
+  dashboard: null,
+  userName: "",
 };
 
 const MODULE_DEFINITIONS = [
@@ -60,8 +62,8 @@ const ROLE_DEFAULT_MODULES = {
   almacen: ["products", "suppliers", "inventory"],
 };
 
-const moduleLabel = (module) => MODULE_DEFINITIONS.find(([key]) => key === module)?.[1] || module;
-const hasModule = (module) => state.userModules.includes(module);
+const moduleLabel = (module) => module === "dashboard" ? "Inicio" : MODULE_DEFINITIONS.find(([key]) => key === module)?.[1] || module;
+const hasModule = (module) => module === "dashboard" || state.userModules.includes(module);
 
 const money = new Intl.NumberFormat("es-DO", {
   style: "currency",
@@ -76,6 +78,7 @@ const setLoading = (visible) => $("#loading-screen")?.classList.toggle("is-hidde
 document.addEventListener("DOMContentLoaded", async () => {
   enhanceUi();
   bindTabs();
+  bindDashboard();
   bindSale();
   bindProductMaster();
   bindClients();
@@ -102,6 +105,7 @@ async function boot() {
   $("#db-status").textContent = `BD ${health.database}`;
   $("#user-status").textContent = `${health.user.name} · ${health.user.role}`;
   state.userRole = health.user.role;
+  state.userName = health.user.name || "Usuario";
   state.userModules = Array.isArray(health.user.modules) ? health.user.modules : [];
   state.paypal = health.paypal || { configured: false };
   state.fiscalIssuer = health.fiscal_issuer || {};
@@ -110,8 +114,8 @@ async function boot() {
   state.imecfActive = Boolean(health.imecf_active);
   state.imecfConfigured = Boolean(health.imecf_configured);
   renderFiscalMode(health);
-  const firstModule = applyModuleAccess();
-  if (firstModule) await setView(firstModule, true);
+  applyModuleAccess();
+  await setView("dashboard", true);
 }
 
 function renderFiscalMode(health) {
@@ -138,12 +142,13 @@ function applyModuleAccess() {
     section.setAttribute("aria-hidden", String(!authorized));
     if (!authorized) section.classList.remove("active");
   });
-  const firstModule = MODULE_DEFINITIONS.find(([module]) => hasModule(module))?.[0] || "";
+  const firstModule = "dashboard";
   if (!firstModule) toast("Tu usuario no tiene módulos asignados. Solicita acceso al administrador.", true);
   return firstModule;
 }
 
 async function refreshViewData(view) {
+  if (view === "dashboard") await refreshDashboard();
   if (view === "sale") {
     await refreshProducts();
     await refreshClients();
@@ -164,7 +169,7 @@ async function refreshViewData(view) {
 
 async function setView(view, refresh = true) {
   if (!hasModule(view)) {
-    const fallback = MODULE_DEFINITIONS.find(([module]) => hasModule(module))?.[0];
+    const fallback = "dashboard";
     if (!fallback) return;
     view = fallback;
   }
@@ -180,6 +185,96 @@ async function setView(view, refresh = true) {
   });
   document.body.dataset.view = view;
   if (refresh) await refreshViewData(view);
+}
+
+function bindDashboard() {
+  $("#dashboard")?.addEventListener("click", (event) => {
+    const target = event.target.closest?.("[data-dashboard-view]");
+    if (!target) return;
+    setView(target.dataset.dashboardView);
+  });
+}
+
+async function refreshDashboard() {
+  const payload = await api("/api/dashboard");
+  state.dashboard = payload;
+  const now = new Date();
+  const hour = now.getHours();
+  const greeting = hour < 12 ? "Buenos días" : hour < 18 ? "Buenas tardes" : "Buenas noches";
+  $("#dashboard-greeting").textContent = `${greeting}, ${state.userName.split(" ")[0]}`;
+  $("#dashboard-date").textContent = new Intl.DateTimeFormat("es-DO", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(now);
+
+  const sales = payload.sales || {};
+  const pending = payload.pending || {};
+  const inventory = payload.inventory || {};
+  const cash = payload.cash || {};
+  const pendingTotal = Number(pending.preinvoices || 0) + Number(pending.customer_requests || 0);
+  const cashValue = cash.status === "abierta" ? money.format(cash.expected_cash || cash.opening_amount || 0) : "Sin turno";
+  $("#dashboard-kpis").innerHTML = [
+    ["Ventas de hoy", money.format(sales.total || 0), `${sales.invoice_count || 0} comprobante(s)`, "sale", "teal"],
+    ["Pendientes", String(pendingTotal), `${pending.preinvoices || 0} pre-facturas · ${pending.customer_requests || 0} portal`, "preinvoices", "amber"],
+    ["Stock crítico", String(inventory.low_stock || 0), `${inventory.active_products || 0} artículos activos`, "inventory", Number(inventory.low_stock || 0) ? "red" : "green"],
+    ["Caja", cashValue, cash.status === "abierta" ? "Turno abierto" : "Abre un turno para operar", "cash", cash.status === "abierta" ? "green" : "neutral"],
+  ].filter(([, , , view]) => hasModule(view)).map(([label, value, detail, view, tone]) => `
+    <button class="dashboard-kpi ${tone}" type="button" data-dashboard-view="${view}">
+      <span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small><i aria-hidden="true">→</i>
+    </button>`).join("");
+
+  renderDashboardChart(payload.trend || []);
+  renderDashboardStatus(payload);
+  renderDashboardRecent(payload.recent_invoices || []);
+  renderDashboardTopProducts(payload.top_products || []);
+  renderDashboardQuickActions();
+  $$("#dashboard [data-dashboard-view]").forEach((button) => { button.hidden = !hasModule(button.dataset.dashboardView); });
+}
+
+function renderDashboardChart(rows) {
+  const maximum = Math.max(1, ...rows.map((row) => Number(row.total || 0)));
+  const weekTotal = rows.reduce((sum, row) => sum + Number(row.total || 0), 0);
+  $("#dashboard-week-total").textContent = money.format(weekTotal);
+  $("#dashboard-chart").innerHTML = rows.map((row) => {
+    const day = new Date(`${row.date}T12:00:00`);
+    const height = Math.max(Number(row.total || 0) > 0 ? 10 : 3, Math.round(Number(row.total || 0) / maximum * 100));
+    return `<div class="dashboard-bar-column" title="${escapeHtml(row.date)} · ${money.format(row.total || 0)}">
+      <span>${row.invoice_count || 0}</span><div class="dashboard-bar-track"><i style="height:${height}%"></i></div><strong>${escapeHtml(new Intl.DateTimeFormat("es-DO", { weekday: "short" }).format(day).replace(".", ""))}</strong>
+    </div>`;
+  }).join("");
+}
+
+function renderDashboardStatus(payload) {
+  const fiscal = payload.fiscal || {};
+  const credits = payload.credits || {};
+  const sales = payload.sales || {};
+  const rows = [
+    ["ITBIS facturado", money.format(sales.tax || 0), "reports", "normal"],
+    ["Descuentos aplicados", money.format(sales.discounts || 0), "reports", "normal"],
+    ["Crédito aplicado", money.format(sales.credit_applied || 0), "sale", "normal"],
+    ["Notas vigentes", `${credits.count || 0} · ${money.format(credits.available_total || 0)}`, "sale", Number(credits.count || 0) ? "attention" : "normal"],
+    ["e-CF aceptados hoy", String(fiscal.accepted_today || 0), "fiscal", "success"],
+    ["e-CF por revisar", String(fiscal.attention_today || 0), "fiscal", Number(fiscal.attention_today || 0) ? "danger" : "success"],
+  ];
+  $("#dashboard-status").innerHTML = rows.filter(([, , view]) => hasModule(view)).map(([label, value, view, tone]) => `<button type="button" data-dashboard-view="${view}"><span><i class="status-dot ${tone}"></i>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></button>`).join("");
+}
+
+function renderDashboardRecent(invoices) {
+  const container = $("#dashboard-recent");
+  container.innerHTML = invoices.map((invoice) => `<button type="button" data-dashboard-view="reports"><span><strong>${escapeHtml(invoice.provider_encf || invoice.en_ncf)}</strong><small>${escapeHtml(invoice.client_name || "Consumidor Final")} · ${escapeHtml(formatDate(invoice.issued_at))}</small></span><span class="dashboard-amount">${money.format(invoice.total || 0)}<small>${escapeHtml(invoice.api_status || invoice.status || "Local")}</small></span></button>`).join("") || `<div class="empty-state">Todavía no hay comprobantes para mostrar.</div>`;
+}
+
+function renderDashboardTopProducts(products) {
+  $("#dashboard-top-products").innerHTML = products.map((product, index) => `<article><span class="dashboard-rank">${index + 1}</span><div><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(product.sku)} · ${Number(product.quantity || 0)} unidad(es)</small></div><b>${money.format(product.total || 0)}</b></article>`).join("") || `<div class="empty-state">Las ventas de hoy aparecerán aquí.</div>`;
+}
+
+function renderDashboardQuickActions() {
+  const actions = [
+    ["sale", "Nueva venta", "Crear una pre-factura o comprobante"],
+    ["preinvoices", "Pre-facturas", "Revisar solicitudes pendientes"],
+    ["inventory", "Inventario", "Consultar existencias y alertas"],
+    ["cash", "Cuadre de caja", "Abrir, revisar o cerrar el turno"],
+    ["fiscal", "Gestión fiscal", "Consultar estados y documentos"],
+    ["admin", "Usuarios", "Administrar accesos por módulo"],
+  ];
+  $("#dashboard-quick-actions").innerHTML = actions.filter(([view]) => hasModule(view)).map(([view, title, detail]) => `<button type="button" data-dashboard-view="${view}"><span>${escapeHtml(title.slice(0, 1))}</span><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></div><i>→</i></button>`).join("");
 }
 
 function bindAdmin() {
@@ -262,7 +357,7 @@ async function refreshAudit(page = 1) {
 }
 
 function enhanceUi() {
-  document.body.dataset.view = "sale";
+  document.body.dataset.view = "dashboard";
   $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.classList.contains("active"))));
   createCommandPalette();
 
@@ -308,6 +403,7 @@ function createCommandPalette() {
     </section>`;
   document.body.appendChild(palette);
   const actions = [
+    ["Ir al inicio", "Abrir el resumen operativo", "dashboard", "Inicio"],
     ["Nueva venta", "Abrir el mostrador", "sale", "Venta"],
     ["Buscar productos", "Ir al maestro de artículos", "products", "Maestro de artículos"],
     ["Consultar IA", "Buscar una recomendación técnica", "assistant", "Asistente IA"],

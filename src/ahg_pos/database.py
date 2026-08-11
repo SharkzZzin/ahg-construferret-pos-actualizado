@@ -2324,6 +2324,104 @@ class Database:
             """
         )
 
+    def dashboard_summary(self) -> dict[str, Any]:
+        today = date.today()
+        today_text = today.isoformat()
+        sales = self.fetch_one(
+            """
+            SELECT COUNT(*) AS invoice_count,
+                   COALESCE(SUM(total), 0) AS total,
+                   COALESCE(SUM(tax), 0) AS tax,
+                   COALESCE(SUM(discount_total), 0) AS discounts,
+                   COALESCE(SUM(credit_applied), 0) AS credit_applied
+            FROM invoices WHERE DATE(issued_at) = ?
+            """,
+            (today_text,),
+        ) or {}
+        trend_start = today - timedelta(days=6)
+        trend_rows = self.fetch_all(
+            """
+            SELECT CAST(DATE(issued_at) AS TEXT) AS sale_date, COUNT(*) AS invoice_count,
+                   COALESCE(SUM(total), 0) AS total
+            FROM invoices
+            WHERE DATE(issued_at) BETWEEN ? AND ?
+            GROUP BY DATE(issued_at)
+            ORDER BY DATE(issued_at)
+            """,
+            (trend_start.isoformat(), today_text),
+        )
+        trend_map = {str(row["sale_date"]): row for row in trend_rows}
+        trend = []
+        for offset in range(7):
+            day = trend_start + timedelta(days=offset)
+            row = trend_map.get(day.isoformat(), {})
+            trend.append({
+                "date": day.isoformat(),
+                "invoice_count": int(row.get("invoice_count") or 0),
+                "total": round(float(row.get("total") or 0), 2),
+            })
+        pending_preinvoices = int(self.scalar(
+            "SELECT COUNT(*) FROM preinvoices WHERE LOWER(status) IN ('borrador', 'pendiente')"
+        ) or 0)
+        pending_requests = int(self.scalar(
+            "SELECT COUNT(*) FROM public_quote_requests WHERE LOWER(status) = 'pendiente'"
+        ) or 0)
+        low_stock = int(self.scalar(
+            "SELECT COUNT(*) FROM products WHERE active AND stock <= min_stock"
+        ) or 0)
+        active_products = int(self.scalar("SELECT COUNT(*) FROM products WHERE active") or 0)
+        active_clients = int(self.scalar("SELECT COUNT(*) FROM clients WHERE active") or 0)
+        credits = self.available_credit_notes(None)
+        top_products = self.fetch_all(
+            """
+            SELECT p.id, p.name, p.sku, COALESCE(SUM(ii.quantity), 0) AS quantity,
+                   COALESCE(SUM(ii.line_total), 0) AS total
+            FROM invoice_items ii
+            JOIN invoices i ON i.id = ii.invoice_id
+            JOIN products p ON p.id = ii.product_id
+            WHERE DATE(i.issued_at) = ?
+            GROUP BY p.id, p.name, p.sku
+            ORDER BY quantity DESC, total DESC
+            LIMIT 5
+            """,
+            (today_text,),
+        )
+        provider_counts = self.fetch_one(
+            """
+            SELECT
+              COALESCE(SUM(CASE WHEN LOWER(COALESCE(api.api_status, '')) LIKE '%acept%' THEN 1 ELSE 0 END), 0) AS accepted,
+              COALESCE(SUM(CASE WHEN COALESCE(api.last_error, '') <> '' OR LOWER(COALESCE(api.api_status, '')) LIKE '%rechaz%' THEN 1 ELSE 0 END), 0) AS attention
+            FROM invoices i LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
+            WHERE DATE(i.issued_at) = ?
+            """,
+            (today_text,),
+        ) or {}
+        return {
+            "date": today_text,
+            "sales": {
+                "invoice_count": int(sales.get("invoice_count") or 0),
+                "total": round(float(sales.get("total") or 0), 2),
+                "tax": round(float(sales.get("tax") or 0), 2),
+                "discounts": round(float(sales.get("discounts") or 0), 2),
+                "credit_applied": round(float(sales.get("credit_applied") or 0), 2),
+            },
+            "pending": {"preinvoices": pending_preinvoices, "customer_requests": pending_requests},
+            "inventory": {"active_products": active_products, "low_stock": low_stock},
+            "clients": {"active": active_clients},
+            "credits": {
+                "count": len(credits),
+                "available_total": round(sum(float(note["available_amount"]) for note in credits), 2),
+            },
+            "fiscal": {
+                "accepted_today": int(provider_counts.get("accepted") or 0),
+                "attention_today": int(provider_counts.get("attention") or 0),
+            },
+            "cash": self.cash_session_detail(),
+            "trend": trend,
+            "top_products": top_products,
+            "recent_invoices": self.recent_invoices(limit=6),
+        }
+
     def fiscal_dashboard(self) -> dict[str, Any]:
         documents = self.recent_invoices(limit=100)
         sequences = self.fetch_all(

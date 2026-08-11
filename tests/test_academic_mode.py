@@ -93,6 +93,13 @@ class AcademicModeTests(unittest.TestCase):
         self.assertNotIn("academic-public-notice", catalog)
         self.assertIn("Emitir comprobante de prueba", pos)
 
+    def test_dashboard_is_the_initial_authenticated_view(self) -> None:
+        pos = (ROOT / "src" / "ahg_pos" / "web" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "src" / "ahg_pos" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('<section id="dashboard" class="view active">', pos)
+        self.assertIn('data-view="dashboard">Inicio</button>', pos)
+        self.assertIn('await setView("dashboard", true)', app)
+
     def test_printed_receipt_includes_payment_discount_and_dgii_link(self) -> None:
         app = (ROOT / "src" / "ahg_pos" / "web" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Forma de pago", app)

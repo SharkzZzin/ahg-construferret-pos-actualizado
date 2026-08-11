@@ -82,6 +82,15 @@ class ProductMasterTests(unittest.TestCase):
         auth_user, _ = authenticated
         self.assertEqual(auth_user.modules, ("clients", "audit"))
 
+    def test_dashboard_summary_contains_operational_metrics(self) -> None:
+        summary = self.db.dashboard_summary()
+        self.assertEqual(len(summary["trend"]), 7)
+        self.assertIn("invoice_count", summary["sales"])
+        self.assertIn("low_stock", summary["inventory"])
+        self.assertIn("preinvoices", summary["pending"])
+        self.assertIn("available_total", summary["credits"])
+        self.assertIn("status", summary["cash"])
+
     def test_audit_list_only_returns_user_actions(self) -> None:
         admin = self.db.fetch_one("SELECT id FROM users ORDER BY id LIMIT 1")
         self.db.log_audit(int(admin["id"]), "Actualizar cliente", "cliente", "42", {"name": "Cliente"})

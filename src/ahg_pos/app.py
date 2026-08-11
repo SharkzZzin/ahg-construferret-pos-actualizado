@@ -171,6 +171,13 @@ class POSHandler(BaseHTTPRequestHandler):
                         "email": email_delivery_status(),
                     }
                 )
+            elif path == "/api/dashboard":
+                user = self.current_user()
+                dashboard = DB.dashboard_summary()
+                dashboard["recent_invoices"] = [invoice_public_model(row) for row in dashboard.get("recent_invoices", [])]
+                if not any(user.can_access(module) for module in ("sale", "reports", "fiscal")):
+                    dashboard["recent_invoices"] = []
+                self.send_json(dashboard)
             elif path == "/api/products":
                 self.require_any_module("sale", "products", "preinvoices", "assistant", "inventory")
                 query = parse_qs(parsed.query)
