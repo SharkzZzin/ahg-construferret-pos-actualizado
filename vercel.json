@@ -9,6 +9,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 60,
+      "includeFiles": "{src/**,schema/**}",
       "excludeFiles": "{tests/**,output/**,tmp/**,docs/**,.venv/**,data/**,**/*.db,**/*.sqlite}"
     }
   }
