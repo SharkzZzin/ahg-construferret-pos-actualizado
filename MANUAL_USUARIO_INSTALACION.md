@@ -1,5 +1,7 @@
 # AHG CONSTRUFERRET POS
 
+> Proyecto académico: todos los datos, pagos, comprobantes e integraciones son demostrativos y no tienen validez comercial o fiscal.
+
 ## 1. Requisitos
 
 - Python 3.11 o superior.

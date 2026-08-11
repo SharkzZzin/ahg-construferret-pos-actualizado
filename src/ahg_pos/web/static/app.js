@@ -89,16 +89,16 @@ function renderFiscalMode(health) {
   const title = $("#fiscal-mode-title");
   const copy = $("#fiscal-mode-copy");
   if (health.imecf_active) {
-    status.textContent = "IMECF conectado";
+    status.textContent = "IMECF Test conectado";
     status.className = "status-pill";
-    title.textContent = "Facturación electrónica activa";
-    copy.textContent = "Al emitir, el documento será enviado a IMECF.";
+    title.textContent = "Simulación e-CF conectada";
+    copy.textContent = "El comprobante académico se enviará únicamente al ambiente de prueba.";
     return;
   }
   status.textContent = health.imecf_configured ? "IMECF desactivado" : "IMECF sin configurar";
   status.className = "status-pill warning";
-  title.textContent = "Facturacion local";
-  copy.textContent = "El comprobante se guardara localmente y no se enviara a DGII.";
+  title.textContent = "Simulación fiscal académica";
+  copy.textContent = "El comprobante demostrativo se guardará sin validez ante la DGII.";
 }
 
 function bindTabs() {

@@ -2,6 +2,8 @@
 
 Version 2.0 - julio de 2026
 
+> Este sistema es un proyecto académico. Vercel y Supabase se usan para publicar la demostración; ventas, pagos, datos, comprobantes e integraciones carecen de validez comercial o fiscal.
+
 ## 1. Arquitectura recomendada
 
 La instalacion productiva utiliza:
@@ -124,12 +126,15 @@ Configura las siguientes variables en **Production** y, si se necesita, también
 
     DATABASE_URL=<cadena Session pooler de Supabase>
     AHG_CREDENTIAL_SECRET=<secreto aleatorio largo>
+    AHG_ACADEMIC_MODE=1
     AHG_DEMO_MODE=0
     AHG_AUTH_SECURE_COOKIE=1
     IMECF_BASE_URL=https://ecf-platform-backend-50801509587.us-central1.run.app
     IMECF_COMPANY_ID=<id de la empresa IMECF>
     IMECF_ENABLED=1
     IMECF_API_KEY=<clave de prueba IMECF>
+    PAYPAL_ENVIRONMENT=sandbox
+    PAYPAL_NO_CHARGE=1
 
 Las variables sensibles se agregan desde **Vercel -> Project -> Settings -> Environment Variables** o con `vercel env add`. Nunca guardes `DATABASE_URL`, `AHG_CREDENTIAL_SECRET` ni `IMECF_API_KEY` en `.env`, GitHub, capturas o documentos.
 
@@ -183,7 +188,7 @@ Para revisar errores de despliegue:
 8. Pulsa **Probar conexion**.
 9. Pulsa **Activar** cuando las pruebas sean correctas.
 
-Usa ambiente `test` durante la demostracion. No emitas comprobantes reales sin validar primero secuencias, RNC, ambiente y autorizacion fiscal.
+El modo académico fuerza ambiente `test`. No configures credenciales, pagos ni comprobantes reales.
 
 ## 12. Copias de seguridad y seguridad
 

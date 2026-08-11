@@ -733,6 +733,8 @@ class Database:
         base_url = str(payload.get("base_url", "")).strip().rstrip("/")
         portal_url = str(payload.get("portal_url", "")).strip().rstrip("/")
         environment = str(payload.get("environment", "test")).strip().lower()
+        if settings.academic_mode:
+            environment = "test"
         api_key = str(payload.get("api_key", "")).strip()
         enabled = bool(payload.get("enabled", False))
         if not workspace_name or not issuer_name:
@@ -798,6 +800,8 @@ class Database:
         row = self.fetch_one("SELECT * FROM fiscal_companies WHERE id = ?", (company_id,))
         if not row:
             raise DatabaseError("Configuración fiscal no encontrada.")
+        if settings.academic_mode and str(row.get("environment") or "test").lower() != "test":
+            raise DatabaseError("El proyecto académico solo permite perfiles fiscales de prueba.")
         if not bool(row["enabled"]) or not bool(row["last_test_ok"]) or not row["validated_at"]:
             raise DatabaseError("Primero habilita, valida y prueba la conexión de esta empresa.")
         now = self.now()

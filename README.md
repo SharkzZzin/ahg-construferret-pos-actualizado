@@ -2,6 +2,8 @@
 
 Sistema academico en Python para el proyecto integrador: ventas, inventario, recomendaciones con IA/MCP y facturacion e-CF 31/32.
 
+> **Alcance académico:** todas las ventas, preórdenes, consultas, pagos, comprobantes e-CF e integraciones se usan exclusivamente para demostración. Los comprobantes no tienen validez fiscal o comercial, PayPal permanece en Sandbox sin cargo e IMECF solo puede operar en ambiente de prueba.
+
 ## Que incluye
 
 - Interfaz web moderna para mostrador, caja, asistente IA, inventario y reportes.
@@ -137,9 +139,9 @@ Funciones integradas:
 
 La clave compartida previamente debe regenerarse porque quedo expuesta en un mensaje.
 
-## Nota fiscal importante
+## Alcance fiscal académico
 
-Este prototipo genera e-NCF con estructura academica `E` + tipo `31/32` + secuencia de 10 digitos, calcula ITBIS y produce un XML interno para demostracion. Para operar legalmente en produccion se requiere autorizacion de DGII, rangos reales, XML conforme al XSD oficial, firma digital y comunicacion con los servicios oficiales de facturacion electronica.
+Este prototipo genera e-NCF con estructura académica `E` + tipo `31/32` + secuencia de 10 dígitos, calcula ITBIS y produce un XML interno para demostración. No debe configurarse para emitir comprobantes reales ni procesar pagos reales.
 
 Fuentes consultadas:
 

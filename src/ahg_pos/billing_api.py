@@ -56,7 +56,7 @@ class FiscalCompanyConfig:
             company_id=str(row.get("company_id") or ""),
             base_url=str(row.get("base_url") or "").rstrip("/"),
             portal_url=str(row.get("portal_url") or "").rstrip("/"),
-            environment=str(row.get("environment") or "test"),
+            environment="test" if settings.academic_mode else str(row.get("environment") or "test"),
             api_key=str(row.get("api_key") or ""),
             enabled=bool(row.get("enabled")),
             active=bool(row.get("active")),
@@ -102,6 +102,8 @@ class IMECFClient:
 
     @property
     def mode(self) -> str:
+        if settings.academic_mode:
+            return "prueba" if self.active else "simulado"
         return "real" if self.active else "local"
 
     def test_connection(self) -> dict[str, Any]:
@@ -378,7 +380,10 @@ def build_credit_note_payload(note: dict[str, Any]) -> dict[str, Any]:
         "Version": "1.0",
         "IdDoc": {
             "TipoeCF": "34",
-            "IndicadorNotaCredito": credit_note_indicator(note.get("source_issued_at"), note.get("issued_at")),
+            "IndicadorNotaCredito": credit_note_indicator(
+                note.get("source_issued_at"),
+                note.get("issued_at") or note.get("source_issued_at"),
+            ),
             "IndicadorMontoGravado": "0",
             "TipoIngresos": "01",
             "TipoPago": "1",

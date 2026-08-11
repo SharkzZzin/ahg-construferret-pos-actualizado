@@ -146,6 +146,8 @@ input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(15,118,110,.
   font-size: 12px;
 }
 .demo-hint strong { color: var(--ink); }
+.academic-notice { border-color: #f0c36a; background: #fff8e8; }
+.academic-notice strong { color: #7a4b00; }
 
 @media (max-width: 850px) {
   .login-shell { grid-template-columns: 1fr; }

@@ -89,7 +89,7 @@ class POSHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/")
                 else:
                     self.send_file(WEB_DIR / "login.html")
-            elif path in {"/static/login.css", "/static/login.js"}:
+            elif path in {"/static/login.css", "/static/login.js", "/static/logo-ahg.png"}:
                 self.send_file(STATIC_DIR / path.removeprefix("/static/"))
             elif path == "/api/auth/session":
                 user = self.current_user()
@@ -143,6 +143,7 @@ class POSHandler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "app": settings.app_name,
+                        "academic_mode": settings.academic_mode,
                         "database": DB.kind,
                         "fiscal_environment": company.environment,
                         "imecf_configured": imecf.configured,
@@ -637,6 +638,8 @@ class POSHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length == 0:
             return {}
+        if length > 1_000_000:
+            raise ValueError("La solicitud supera el tamaño permitido.")
         raw = self.rfile.read(length).decode("utf-8")
         return json.loads(raw or "{}")
 
