@@ -155,6 +155,8 @@ class Database:
         self.ensure_billing_columns()
         self.ensure_tracking_table()
         self.ensure_public_quote_request_table()
+        self.ensure_audit_table()
+        self.ensure_audit_triggers()
         if self.scalar("SELECT COUNT(*) FROM products") == 0:
             self.seed_demo_data()
         self.ensure_reference_data()
@@ -224,6 +226,68 @@ class Database:
         for name, definition in columns.items():
             if name not in existing:
                 self.execute(f"ALTER TABLE public_quote_requests ADD COLUMN {name} {definition}")
+        self.conn.commit()
+
+    def ensure_audit_table(self) -> None:
+        if self.kind == "sqlite":
+            self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER REFERENCES users(id),
+                    action TEXT NOT NULL,
+                    entity_type TEXT NOT NULL DEFAULT '',
+                    entity_id TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+        else:
+            self.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    action TEXT NOT NULL,
+                    entity_type TEXT NOT NULL DEFAULT '',
+                    entity_id TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMPTZ NOT NULL
+                )
+                """
+            )
+        self.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at)")
+        self.conn.commit()
+
+    def ensure_audit_triggers(self) -> None:
+        if self.kind == "sqlite":
+            statements = [
+                """CREATE TRIGGER IF NOT EXISTS audit_products_insert AFTER INSERT ON products BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'producto', NEW.id, json_object('name', NEW.name, 'sku', NEW.sku), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_products_update AFTER UPDATE ON products BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER UPDATE', 'producto', NEW.id, json_object('name', NEW.name, 'sku', NEW.sku), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_products_delete AFTER DELETE ON products BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER DELETE', 'producto', OLD.id, json_object('name', OLD.name, 'sku', OLD.sku), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_clients_insert AFTER INSERT ON clients BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'cliente', NEW.id, json_object('name', NEW.name), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_clients_update AFTER UPDATE ON clients BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER UPDATE', 'cliente', NEW.id, json_object('name', NEW.name), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_invoices_insert AFTER INSERT ON invoices BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'factura', NEW.id, json_object('encf', NEW.en_ncf, 'total', NEW.total), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_preinvoices_insert AFTER INSERT ON preinvoices BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'pre-factura', NEW.id, json_object('total', NEW.total, 'status', NEW.status), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_users_insert AFTER INSERT ON users BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'usuario', NEW.id, json_object('email', NEW.email, 'role', NEW.role), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_users_update AFTER UPDATE ON users BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER UPDATE', 'usuario', NEW.id, json_object('email', NEW.email, 'role', NEW.role, 'active', NEW.active), datetime('now')); END""",
+                """CREATE TRIGGER IF NOT EXISTS audit_public_quote_insert AFTER INSERT ON public_quote_requests BEGIN INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at) VALUES (NULL, 'TRIGGER INSERT', 'pre-factura pública', NEW.id, json_object('customer_name', NEW.customer_name, 'email', NEW.email, 'total', NEW.total), datetime('now')); END""",
+            ]
+        else:
+            self.execute(
+                """
+                CREATE OR REPLACE FUNCTION audit_row_change() RETURNS trigger AS $$
+                BEGIN
+                    INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at)
+                    VALUES (NULL, 'TRIGGER ' || TG_OP, TG_TABLE_NAME, COALESCE((CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END)::text, ''), '{}'::text, NOW());
+                    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+                END; $$ LANGUAGE plpgsql;
+                """
+            )
+            for table in ("products", "clients", "invoices", "preinvoices", "users", "public_quote_requests"):
+                self.execute(f"DROP TRIGGER IF EXISTS audit_{table}_change ON {table}")
+                self.execute(f"CREATE TRIGGER audit_{table}_change AFTER INSERT OR UPDATE OR DELETE ON {table} FOR EACH ROW EXECUTE FUNCTION audit_row_change()")
         self.conn.commit()
 
     def ensure_product_columns(self) -> None:
@@ -1420,6 +1484,60 @@ class Database:
             ),
         )
         self.conn.commit()
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return self.fetch_all(
+            """
+            SELECT id, name, email, phone, role, active, last_login_at, created_at
+            FROM users ORDER BY name, id
+            """
+        )
+
+    def save_user(self, payload: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
+        name = str(payload.get("name", "")).strip()
+        email = str(payload.get("email", "")).strip().lower()
+        phone = "".join(ch for ch in str(payload.get("phone", "")) if ch.isdigit())
+        role = str(payload.get("role", "cajero")).strip().lower()
+        password = str(payload.get("password", ""))
+        active = bool(payload.get("active", True))
+        if len(name) < 2 or "@" not in email or len(email) < 5:
+            raise DatabaseError("Nombre y correo de usuario son obligatorios.")
+        if role not in {"admin", "gerente", "cajero", "vendedor", "almacen"}:
+            raise DatabaseError("Rol de usuario no válido.")
+        if user_id is None and len(password) < 8:
+            raise DatabaseError("La contraseña inicial debe tener al menos 8 caracteres.")
+        active_value = active if self.kind == "postgres" else int(active)
+        now = self.now()
+        try:
+            if user_id is not None:
+                existing = self.fetch_one("SELECT id FROM users WHERE id = ?", (int(user_id),))
+                if not existing:
+                    raise DatabaseError("Usuario no encontrado.")
+                if password:
+                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, active = ?, password_hash = ? WHERE id = ?", (name, email, phone, role, active_value, hash_password(password), int(user_id)))
+                else:
+                    self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, active = ? WHERE id = ?", (name, email, phone, role, active_value, int(user_id)))
+                saved_id = int(user_id)
+            else:
+                self.execute("INSERT INTO users(name, email, phone, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (name, email, phone, hash_password(password), role, active_value, now))
+                saved_id = self.last_insert_id()
+            self.conn.commit()
+        except Exception as exc:
+            self.conn.rollback()
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise DatabaseError("Ya existe un usuario con ese correo.") from exc
+            raise
+        return self.fetch_one("SELECT id, name, email, phone, role, active, last_login_at, created_at FROM users WHERE id = ?", (saved_id,)) or {}
+
+    def export_backup(self) -> dict[str, Any]:
+        if self.kind == "sqlite":
+            tables = [row["name"] for row in self.fetch_all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        else:
+            tables = [row["table_name"] for row in self.fetch_all("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name")]
+        data: dict[str, Any] = {}
+        for table in tables:
+            data[table] = self.fetch_all(f'SELECT * FROM "{table}"')
+        return {"format": "ahg-pos-backup-v1", "database": self.kind, "generated_at": self.now(), "tables": data}
         request_id = self.last_insert_id()
         return self.get_public_quote_request(request_id)
 
@@ -1891,6 +2009,62 @@ class Database:
             (query[:500], result_count, self.now()),
         )
         self.conn.commit()
+
+    def log_audit(
+        self,
+        user_id: int | None,
+        action: str,
+        entity_type: str = "",
+        entity_id: str | int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO audit_logs(user_id, action, entity_type, entity_id, details_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                str(action)[:120],
+                str(entity_type)[:80],
+                str(entity_id or "")[:80],
+                json.dumps(details or {}, ensure_ascii=False, default=str)[:4000],
+                self.now(),
+            ),
+        )
+        self.conn.commit()
+
+    def list_audit_logs(self, page: int = 1, limit: int = 50, query: str = "") -> dict[str, Any]:
+        page = max(1, int(page or 1))
+        limit = min(100, max(1, int(limit or 50)))
+        query = str(query or "").strip()
+        where = ""
+        params: list[Any] = []
+        if query:
+            where = "WHERE LOWER(a.action || ' ' || a.entity_type || ' ' || a.entity_id || ' ' || COALESCE(u.name, '')) LIKE ?"
+            params.append(f"%{query.lower()}%")
+        total = int(self.scalar(f"SELECT COUNT(*) FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id {where}", tuple(params)) or 0)
+        offset = (page - 1) * limit
+        rows = self.fetch_all(
+            f"""
+            SELECT a.id, a.user_id, COALESCE(u.name, 'Sistema') AS user_name,
+                   a.action, a.entity_type, a.entity_id, a.details_json, a.created_at
+            FROM audit_logs a
+            LEFT JOIN users u ON u.id = a.user_id
+            {where}
+            ORDER BY a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [limit, offset]),
+        )
+        for row in rows:
+            try:
+                row["details"] = json.loads(row.get("details_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                row["details"] = {}
+            row.pop("details_json", None)
+        pages = max(1, (total + limit - 1) // limit)
+        return {"items": rows, "page": page, "limit": limit, "total": total, "pages": pages, "has_next": page < pages, "has_previous": page > 1}
 
     def create_invoice(
         self,

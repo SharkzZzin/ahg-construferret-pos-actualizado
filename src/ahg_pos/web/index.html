@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AHG CONSTRUFERRET POS</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260726-logo-transparent-v2" />
-    <link rel="stylesheet" href="/static/polish.css?v=20260726-v3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260808-audit-ecf-v1" />
+    <link rel="stylesheet" href="/static/polish.css?v=20260808-audit-ecf-v1" />
   </head>
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite" aria-label="Cargando aplicación">
@@ -41,6 +41,8 @@
       <button class="tab" data-view="inventory">Inventario</button>
       <button class="tab" data-view="fiscal">Gestión Fiscal</button>
       <button class="tab" data-view="reports">Facturas</button>
+      <button class="tab" data-view="audit">Auditoría</button>
+      <button class="tab" data-view="admin">Administración</button>
     </nav>
 
     <main class="app-shell">
@@ -162,7 +164,7 @@
                 <p class="eyebrow">Catálogo</p>
                 <h2 id="product-form-title">Nuevo artículo</h2>
               </div>
-              <button id="cancel-product-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+              <button id="cancel-product-edit" class="secondary-button" type="button" hidden>Cancelar edición</button><button id="save-product" class="primary-button compact" type="submit" form="product-form">Guardar artículo</button>
             </div>
             <form id="product-form" class="product-form">
               <input id="master-product-id" type="hidden" />
@@ -192,11 +194,11 @@
               </label>
               <label>
                 Términos para búsqueda e IA
-                <input id="master-tags" class="input" maxlength="500" placeholder="Ej.: tubería agua caliente reparación fuga cpvc" />
+                <input id="master-tags" class="input" maxlength="500" placeholder="Ej.: tubería, agua caliente, reparación, fuga, cpvc" />
+                <small class="field-help">Puedes registrar referencias y términos separados por comas; la IA los usará como vocabulario.</small>
               </label>
               <label class="check-field"><input id="master-active" type="checkbox" checked />Artículo activo para venta y recomendaciones</label>
               <div id="product-form-error" class="notice-error" hidden></div>
-              <button id="save-product" class="primary-button" type="submit">Guardar artículo</button>
             </form>
           </section>
 
@@ -227,7 +229,7 @@
           <section class="panel product-form-panel">
             <div class="panel-head">
               <div><p class="eyebrow">Relaciones comerciales</p><h2 id="client-form-title">Nuevo cliente</h2></div>
-              <button id="cancel-client-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+              <button id="cancel-client-edit" class="secondary-button" type="button" hidden>Cancelar edición</button><button id="save-client" class="primary-button compact" type="submit" form="client-form">Guardar cliente</button>
             </div>
             <form id="client-form" class="product-form">
               <input id="client-form-id" type="hidden" />
@@ -248,7 +250,6 @@
               <label class="check-field"><input id="customer-active" type="checkbox" checked />Cliente activo</label>
               <div id="customer-lookup-result" class="client-validation" hidden></div>
               <div id="client-form-error" class="notice-error" hidden></div>
-              <button id="save-client" class="primary-button" type="submit">Guardar cliente</button>
             </form>
           </section>
           <section class="panel product-master-list">
@@ -267,7 +268,7 @@
           <section class="panel product-form-panel">
             <div class="panel-head">
               <div><p class="eyebrow">Abastecimiento</p><h2 id="supplier-form-title">Nuevo proveedor</h2></div>
-              <button id="cancel-supplier-edit" class="secondary-button" type="button" hidden>Cancelar edición</button>
+              <button id="cancel-supplier-edit" class="secondary-button" type="button" hidden>Cancelar edición</button><button id="save-supplier" class="primary-button compact" type="submit" form="supplier-form">Guardar proveedor</button>
             </div>
             <form id="supplier-form" class="product-form">
               <input id="supplier-form-id" type="hidden" />
@@ -289,7 +290,6 @@
               <label class="check-field"><input id="supplier-active" type="checkbox" checked />Proveedor activo</label>
               <div id="supplier-lookup-result" class="client-validation" hidden></div>
               <div id="supplier-form-error" class="notice-error" hidden></div>
-              <button id="save-supplier" class="primary-button" type="submit">Guardar proveedor</button>
             </form>
           </section>
           <section class="panel product-master-list">
@@ -395,6 +395,23 @@
             </table>
           </div>
         </section>
+      </section>
+
+      <section id="audit" class="view">
+        <section class="panel">
+          <div class="panel-head"><div><p class="eyebrow">Control interno</p><h2>Auditoría del sistema</h2><p class="section-copy">Registro de accesos, cambios, ventas y consultas de IA.</p></div><div class="panel-head-actions"><input id="audit-search" class="input" type="search" placeholder="Usuario, acción o módulo" /><button id="refresh-audit" class="secondary-button" type="button">Actualizar</button></div></div>
+          <div id="audit-summary" class="master-summary"></div>
+          <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Módulo</th><th>Referencia</th><th>Detalle</th></tr></thead><tbody id="audit-table"></tbody></table></div>
+          <div id="audit-table-pagination" class="pagination-controls"></div>
+        </section>
+      </section>
+
+      <section id="admin" class="view">
+        <div class="master-layout">
+          <section class="panel product-form-panel"><div class="panel-head"><div><p class="eyebrow">Seguridad</p><h2 id="user-form-title">Nuevo usuario</h2></div><button id="save-user" class="primary-button compact" type="submit" form="user-form">Guardar usuario</button></div><form id="user-form" class="product-form"><input id="user-form-id" type="hidden" /><label>Nombre<input id="user-name" class="input" maxlength="150" required /></label><div class="form-grid"><label>Correo<input id="user-email" class="input" type="email" required /></label><label>Teléfono<input id="user-phone" class="input" inputmode="numeric" /></label><label>Rol<select id="user-role" class="input"><option value="cajero">Cajero</option><option value="vendedor">Vendedor</option><option value="almacen">Almacén</option><option value="gerente">Gerente</option><option value="admin">Administrador</option></select></label><label>Contraseña<input id="user-password" class="input" type="password" minlength="8" placeholder="Mínimo 8 caracteres" /></label></div><label class="check-field"><input id="user-active" type="checkbox" checked />Usuario activo</label><div id="user-form-error" class="notice-error" hidden></div></form></section>
+          <section class="panel product-master-list"><div class="panel-head"><div><p class="eyebrow">Accesos</p><h2>Usuarios del sistema</h2></div></div><div id="user-list" class="client-list"></div></section>
+        </div>
+        <section class="panel backup-panel"><div class="panel-head"><div><p class="eyebrow">Respaldo</p><h2>Backup de la base de datos</h2><p class="section-copy">Descarga un respaldo JSON con las tablas y registros. No incluye claves ni contraseñas.</p></div><button id="download-backup" class="primary-button" type="button">Descargar backup</button></div><div id="backup-status" class="client-validation" hidden></div></section>
       </section>
 
       <section id="fiscal" class="view">
@@ -611,6 +628,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260726-interactive-v1"></script>
+    <script src="/static/app.js?v=20260808-audit-ecf-v1"></script>
   </body>
 </html>

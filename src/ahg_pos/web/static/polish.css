@@ -105,3 +105,5 @@
   .portal-hero h1 { font-size: 2rem; }
   .chat-log { height: 300px; }
 }
+.panel-head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.summary-chip { display: inline-flex; margin: 4px 6px 4px 0; padding: 6px 10px; border-radius: 999px; background: #eef8f5; color: #087f73; font-size: 12px; font-weight: 700; }

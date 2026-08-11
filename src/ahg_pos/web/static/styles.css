@@ -1764,7 +1764,7 @@ th {
 
 .aux-receipt-top {
   display: grid;
-  grid-template-columns: 1fr 150px;
+  grid-template-columns: 1fr;
   gap: 18px;
   align-items: start;
 }
@@ -1797,6 +1797,23 @@ th {
   justify-self: end;
   width: 150px;
   height: 150px;
+}
+
+.aux-qr-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  padding-top: 12px;
+  border-top: 1px solid #d8e3df;
+  font-size: 10px;
+  color: #52646a;
+}
+
+.aux-qr-footer .aux-qr {
+  flex: 0 0 120px;
+  width: 120px;
+  height: 120px;
 }
 
 .aux-qr svg {
@@ -2126,3 +2143,4 @@ th {
     height: 34mm;
   }
 }
+.field-help { display: block; margin-top: -8px; color: #687a80; font-size: 12px; }

@@ -27,6 +27,7 @@ const state = {
   clientPagination: null,
   supplierPagination: null,
   webRequests: [],
+  auditPagination: null,
 };
 
 const money = new Intl.NumberFormat("es-DO", {
@@ -52,6 +53,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindInventory();
   bindFiscal();
   bindReports();
+  bindAudit();
+  bindAdmin();
   bindDialog();
   try {
     await boot();
@@ -121,6 +124,64 @@ function setView(view) {
   if (view === "clients") refreshClients();
   if (view === "suppliers") refreshSuppliers();
   if (view === "preinvoices") refreshPreinvoices();
+  if (view === "audit") refreshAudit();
+  if (view === "admin") refreshAdmin();
+}
+
+function bindAdmin() {
+  $("#user-form")?.addEventListener("submit", saveUser);
+  $("#download-backup")?.addEventListener("click", downloadBackup);
+}
+
+async function refreshAdmin() {
+  if (!$("#user-list")) return;
+  try {
+    const payload = await api("/api/users");
+    $("#user-list").innerHTML = (payload.users || []).map((user) => `<article class="client-card"><div><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · ${user.active ? "Activo" : "Inactivo"}</span><span>Último acceso: ${escapeHtml(user.last_login_at ? formatDate(user.last_login_at) : "Nunca")}</span></div><div class="company-actions"><button class="table-button" type="button" data-edit-user="${user.id}">Editar</button></div></article>`).join("") || `<div class="empty-state">No hay usuarios registrados.</div>`;
+    $("#user-list").querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => editUser((payload.users || []).find((user) => String(user.id) === String(button.dataset.editUser)))));
+  } catch (exception) { toast(exception.message, true); }
+}
+
+function editUser(user) {
+  if (!user) return;
+  $("#user-form-id").value = user.id; $("#user-name").value = user.name || ""; $("#user-email").value = user.email || ""; $("#user-phone").value = user.phone || ""; $("#user-role").value = user.role || "cajero"; $("#user-active").checked = Boolean(user.active); $("#user-password").value = ""; $("#user-form-title").textContent = "Editar usuario"; $("#user-password").placeholder = "Vacío para conservar la actual";
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const id = $("#user-form-id").value, error = $("#user-form-error"), button = $("#save-user");
+  error.hidden = true; button.disabled = true;
+  try {
+    const payload = { name: $("#user-name").value.trim(), email: $("#user-email").value.trim(), phone: $("#user-phone").value.trim(), role: $("#user-role").value, password: $("#user-password").value, active: $("#user-active").checked };
+    await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    $("#user-form").reset(); $("#user-form-id").value = ""; $("#user-form-title").textContent = "Nuevo usuario"; $("#user-password").placeholder = "Mínimo 8 caracteres"; await refreshAdmin(); toast(id ? "Usuario actualizado." : "Usuario creado.");
+  } catch (exception) { error.textContent = exception.message; error.hidden = false; } finally { button.disabled = false; }
+}
+
+async function downloadBackup() {
+  const status = $("#backup-status"), button = $("#download-backup"); button.disabled = true; status.hidden = true;
+  try { const response = await fetch("/api/admin/backup"); if (!response.ok) throw new Error((await response.json()).error || "No se pudo generar el backup."); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `ahg-pos-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url); status.textContent = "Backup descargado correctamente."; status.className = "client-validation ok"; status.hidden = false; } catch (exception) { status.textContent = exception.message; status.className = "client-validation error"; status.hidden = false; } finally { button.disabled = false; }
+}
+
+function bindAudit() {
+  $("#refresh-audit")?.addEventListener("click", () => refreshAudit(1));
+  let timer;
+  $("#audit-search")?.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => refreshAudit(1), 250); });
+}
+
+async function refreshAudit(page = 1) {
+  if (!$("#audit-table")) return;
+  const query = $("#audit-search").value.trim();
+  const payload = await api(`/api/audit?page=${page}&limit=50&q=${encodeURIComponent(query)}`);
+  const result = payload.logs || {};
+  state.auditPagination = result;
+  const logs = result.items || [];
+  $("#audit-summary").innerHTML = `<span class="summary-chip">${result.total || 0} eventos registrados</span><span class="summary-chip">Página ${result.page || 1} de ${result.pages || 1}</span>`;
+  $("#audit-table").innerHTML = logs.map((log) => {
+    const details = Object.entries(log.details || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+    return `<tr><td>${escapeHtml(formatDate(log.created_at))}</td><td>${escapeHtml(log.user_name || "Sistema")}</td><td><strong>${escapeHtml(log.action)}</strong></td><td>${escapeHtml(log.entity_type || "")}</td><td>${escapeHtml(log.entity_id || "—")}</td><td>${escapeHtml(details || "—")}</td></tr>`;
+  }).join("") || `<tr><td colspan="6">No hay eventos para este filtro.</td></tr>`;
+  renderPager("audit-table", result, (nextPage) => refreshAudit(nextPage));
 }
 
 function enhanceUi() {
@@ -2172,7 +2233,7 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
   const issuer = state.fiscalIssuer || {};
   const encf = invoice.display_encf || invoice.en_ncf || "";
   const issueDate = formatReceiptDate(invoice.issued_at);
-  const authorizationDate = issueDate;
+  const signatureDate = formatReceiptDateTime(invoice.signed_at || invoice.issued_at);
   const qrData = [encf, issuer.rnc, invoice.rnc_cedula, Number(invoice.total || 0).toFixed(2), invoice.security_code].join("|");
   const items = invoice.items || [];
   const paymentLabel = paymentLabelFor(invoice.payment_method);
@@ -2180,7 +2241,7 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
     ? `${window.location.origin}/api/public/tracking/${encodeURIComponent(invoice.tracking_token)}`
     : "";
   const statusLine = invoice.provider_document_id
-    ? `IMECF: ${escapeHtml(invoice.api_status || "Enviado")}`
+    ? "Documento electrónico enviado para validación fiscal"
     : "Modo: Comprobante local";
   return `
     <section class="aux-receipt">
@@ -2190,7 +2251,6 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
           <h3>Comprobante Auxiliar de Factura Electr&oacute;nica</h3>
           <h4>${escapeHtml(invoice.ecf_label || `e-CF ${invoice.ecf_type}`)}</h4>
         </div>
-        <div class="aux-qr" aria-label="C&oacute;digo QR del comprobante">${fakeQrSvg(qrData)}</div>
       </div>
 
       <div class="aux-meta-grid">
@@ -2217,8 +2277,15 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
         <div>
           Consulte por la clave de acceso en el portal DGII/IMECF<br />
           <strong>CUFE:</strong> ${escapeHtml(invoice.track_id || invoice.security_code || encf)}<br />
-          Protocolo de autorizaci&oacute;n: ${escapeHtml(invoice.provider_document_id || "Pendiente")}, de ${escapeHtml(authorizationDate)}
+          <strong>C&oacute;digo de seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
+          <strong>Fecha y hora de firma:</strong> ${escapeHtml(signatureDate)}<br />
+          Protocolo de autorizaci&oacute;n: ${escapeHtml(invoice.provider_document_id || "Pendiente")}
         </div>
+      </div>
+
+      <div class="aux-qr-footer" aria-label="C&oacute;digo QR del comprobante">
+        <div class="aux-qr">${fakeQrSvg(qrData)}</div>
+        <span>Consulte este comprobante mediante el c&oacute;digo QR en el portal DGII.</span>
       </div>
 
       <table class="aux-items-table">
@@ -2270,7 +2337,7 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
 
       <div class="aux-status-line">${escapeHtml(statusLine)}</div>
       ${trackingUrl ? `<div class="aux-status-line">Token de seguimiento: <a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noreferrer">Consultar estado remoto</a></div>` : ""}
-      ${warning ? `<p class="notice-error aux-warning">${escapeHtml(warning)}</p>` : ""}
+      ${warning ? `<p class="notice-error aux-warning"><strong>Motivo de rechazo:</strong> ${escapeHtml(warning)}</p>` : ""}
     </section>
   `;
 }
@@ -2320,6 +2387,12 @@ function formatReceiptDate(value) {
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) return String(value || "");
   return date.toLocaleDateString("es-DO", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function formatReceiptDateTime(value) {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toLocaleString("es-DO", { dateStyle: "short", timeStyle: "medium" });
 }
 
 function fakeQrSvg(text) {
