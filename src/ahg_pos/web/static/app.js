@@ -94,19 +94,13 @@ async function boot() {
 
 function renderFiscalMode(health) {
   const status = $("#fiscal-status");
-  const title = $("#fiscal-mode-title");
-  const copy = $("#fiscal-mode-copy");
   if (health.imecf_active) {
     status.textContent = "IMECF Test conectado";
     status.className = "status-pill";
-    title.textContent = "Simulación e-CF conectada";
-    copy.textContent = "El comprobante se enviará únicamente al ambiente TESTeCF y no tendrá validez fiscal.";
     return;
   }
   status.textContent = health.imecf_configured ? "IMECF desactivado" : "IMECF sin configurar";
   status.className = "status-pill warning";
-  title.textContent = "Emisión e-CF en TESTeCF";
-  copy.textContent = "El comprobante se guardará sin validez fiscal en el ambiente de prueba.";
 }
 
 function bindTabs() {
@@ -269,6 +263,8 @@ function toggleCommandPalette(open) {
 
 function bindWebRequests() {
   $("#refresh-web-requests").addEventListener("click", refreshWebRequests);
+  $("#close-web-request-preview").addEventListener("click", () => $("#web-request-preview-dialog").close());
+  $("#close-web-request-preview-footer").addEventListener("click", () => $("#web-request-preview-dialog").close());
 }
 
 async function refreshWebRequests() {
@@ -279,7 +275,7 @@ async function refreshWebRequests() {
       <div><div class="document-title"><strong>Solicitud #${request.id} · ${escapeHtml(request.customer_name)}</strong><span class="badge warning">${escapeHtml(request.status)}</span></div>
       <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Motivo:</strong> ${escapeHtml(request.problem||"No indicado")}</p>
       <span>${request.items.length} artículos · ${formatDate(request.created_at)}</span></div>
-      <div><strong>${money.format(request.total)}</strong><br/><small>${request.items.map((item) => `${escapeHtml(item.name)} x${item.quantity}`).join(", ")}</small></div>
+      <div class="web-request-summary"><strong class="web-request-total">${money.format(request.total)}</strong></div>
     </article>`).join("") || `<div class="empty-state">No hay solicitudes del catálogo.</div>`;
   decorateWebRequests();
 }
@@ -290,20 +286,58 @@ function decorateWebRequests() {
     if (!request || card.querySelector("[data-web-request-actions]")) return;
     const actions = document.createElement("div");
     actions.dataset.webRequestActions = request.id;
-    actions.className = "stack compact-actions";
+    actions.className = "web-request-actions";
+    const previewButton = document.createElement("button");
+    previewButton.className = "request-action-button preview";
+    previewButton.type = "button";
+    previewButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg><span>Vista previa</span>';
+    previewButton.dataset.previewWebRequest = request.id;
+    previewButton.addEventListener("click", () => showWebRequestPreview(request.id));
     const loadButton = document.createElement("button");
-    loadButton.className = "primary-button compact";
+    loadButton.className = "request-action-button load";
+    loadButton.type = "button";
     loadButton.textContent = "Cargar en ventas";
     loadButton.dataset.loadWebRequest = request.id;
     loadButton.addEventListener("click", () => loadWebRequest(request.id));
     const deleteButton = document.createElement("button");
-    deleteButton.className = "table-button danger";
-    deleteButton.textContent = "Eliminar";
+    deleteButton.className = "request-action-button delete";
+    deleteButton.type = "button";
+    deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg><span>Eliminar</span>';
     deleteButton.dataset.deleteWebRequest = request.id;
     deleteButton.addEventListener("click", () => deleteWebRequest(request.id));
-    actions.append(loadButton, deleteButton);
+    actions.append(previewButton, loadButton, deleteButton);
     card.lastElementChild?.appendChild(actions);
   });
+}
+
+function showWebRequestPreview(requestId) {
+  const request = state.webRequests.find((item) => Number(item.id) === Number(requestId));
+  if (!request) return;
+  $("#web-request-preview-title").textContent = `Prefactura #${request.id}`;
+  $("#web-request-preview").innerHTML = `
+    <section class="request-preview-customer">
+      <div><span>Cliente</span><strong>${escapeHtml(request.customer_name)}</strong></div>
+      <div><span>Teléfono</span><strong>${escapeHtml(request.phone || "No indicado")}</strong></div>
+      <div><span>Correo</span><strong>${escapeHtml(request.email || "No indicado")}</strong></div>
+      <div><span>Comprobante</span><strong>e-CF ${escapeHtml(request.ecf_type || "32")}</strong></div>
+    </section>
+    <section class="request-preview-note"><span>Motivo o comentario</span><p>${escapeHtml(request.problem || "No indicado")}</p></section>
+    <div class="request-preview-table-wrap"><table class="request-preview-table">
+      <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr></thead>
+      <tbody>${(request.items || []).map((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const amount = Number(item.line_subtotal || quantity * unitPrice);
+        return `<tr><td><strong>${escapeHtml(item.name || "Producto")}</strong><small>${escapeHtml(item.sku || "")}</small></td><td>${quantity}</td><td>${money.format(unitPrice)}</td><td>${money.format(amount)}</td></tr>`;
+      }).join("")}</tbody>
+    </table></div>
+    <section class="request-preview-totals">
+      <div><span>Subtotal</span><strong>${money.format(request.subtotal || 0)}</strong></div>
+      <div><span>ITBIS</span><strong>${money.format(request.tax || 0)}</strong></div>
+      <div class="total"><span>Total</span><strong>${money.format(request.total || 0)}</strong></div>
+    </section>`;
+  const dialog = $("#web-request-preview-dialog");
+  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "open");
 }
 
 async function deleteWebRequest(requestId) {
