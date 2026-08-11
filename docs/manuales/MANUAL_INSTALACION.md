@@ -51,7 +51,7 @@ Crear y activar el entorno virtual:
 
 Iniciar la aplicación:
 
-    $env:PYTHONPATH="$PWD\src"
+    $env:PYTHONPATH="$PWD"
     python -m ahg_pos.app
 
 Abrir `http://127.0.0.1:8765/`. Si no se define `DATABASE_URL`, se crea una base SQLite local en `data/ahg_demo.db`.
@@ -138,7 +138,7 @@ No compartas `DATABASE_URL`, `SECRET_KEY`, contraseñas de aplicación, credenci
 
 Ejecuta las pruebas automatizadas:
 
-    $env:PYTHONPATH="$PWD\src"
+    $env:PYTHONPATH="$PWD"
     python -m pytest -q
 
 Lista mínima de verificación manual:

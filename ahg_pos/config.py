@@ -7,7 +7,7 @@ from pathlib import Path
 from .credential_store import load_credential_secret, save_credential_secret
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 SCHEMA_DIR = PROJECT_ROOT / "schema"
 

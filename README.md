@@ -62,7 +62,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 
-$env:PYTHONPATH="$PWD\src"
+$env:PYTHONPATH="$PWD"
 $env:AHG_DEMO_MODE="1"
 $env:AHG_AUTH_SECURE_COOKIE="0"
 python -m ahg_pos.app
@@ -79,7 +79,7 @@ La primera ejecución crea `data/ahg_demo.db`. Las credenciales iniciales se def
 ## Ejecutar las pruebas
 
 ```powershell
-$env:PYTHONPATH="$PWD\src"
+$env:PYTHONPATH="$PWD"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
@@ -178,8 +178,8 @@ docs/manuales/               Manuales y capturas
 output/pdf/                  Manuales PDF generados
 schema/                      Esquemas SQLite y PostgreSQL
 scripts/                     Generadores y utilidades
-src/ahg_pos/                 Aplicación y lógica de negocio
-src/ahg_pos/web/             Interfaces POS y Customer
+ahg_pos/                     Aplicación y lógica de negocio
+ahg_pos/web/                 Interfaces POS y Customer
 tests/                       Pruebas automatizadas
 vercel.json                  Configuración de despliegue
 ```

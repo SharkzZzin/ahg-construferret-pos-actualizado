@@ -53,7 +53,7 @@ La versión imprimible está en `output/pdf/manual_instalacion_ahg_construferret
     python -m venv .venv
     .\.venv\Scripts\Activate.ps1
     python -m pip install -r requirements.txt
-    $env:PYTHONPATH="$PWD\src"
+    $env:PYTHONPATH="$PWD"
     python -m ahg_pos.app
 
 Abre `http://127.0.0.1:8765/`. El modo local usa SQLite cuando no existe `DATABASE_URL`; la publicación en Vercel debe usar Supabase PostgreSQL.
