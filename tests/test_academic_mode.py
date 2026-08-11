@@ -91,7 +91,18 @@ class AcademicModeTests(unittest.TestCase):
         catalog = (ROOT / "src" / "ahg_pos" / "web" / "customer.html").read_text(encoding="utf-8")
         self.assertNotIn("academic-banner", pos)
         self.assertNotIn("academic-public-notice", catalog)
-        self.assertIn("Simular comprobante", pos)
+        self.assertIn("Emitir comprobante de prueba", pos)
+
+    def test_printed_receipt_includes_payment_discount_and_dgii_link(self) -> None:
+        app = (ROOT / "src" / "ahg_pos" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Forma de pago", app)
+        self.assertIn('auxTotalRow("Descuento aplicado", invoice.discount_total || 0)', app)
+        self.assertIn("Consultar comprobante en DGII", app)
+        self.assertNotIn("Estado operativo:", app)
+        self.assertNotIn("ID IMECF:", app)
+        self.assertIn("function imecfDiagnostic(result)", app)
+        self.assertIn("function runRemoteFiscalLookup(button)", app)
+        self.assertIn("/api/imecf/by-encf/", app)
 
     def test_postgres_schema_setup_is_serialized_and_skips_current_version(self) -> None:
         database = _CurrentPostgresDatabase()

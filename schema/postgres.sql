@@ -114,6 +114,39 @@ CREATE TABLE IF NOT EXISTS daily_transactions (
     created_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cash_sessions (
+    id SERIAL PRIMARY KEY,
+    opened_by INTEGER,
+    opened_at TIMESTAMPTZ NOT NULL,
+    opening_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'abierta' CHECK(status IN ('abierta', 'cerrada')),
+    closed_by INTEGER,
+    closed_at TIMESTAMPTZ,
+    expected_cash NUMERIC(12, 2),
+    counted_cash NUMERIC(12, 2),
+    difference NUMERIC(12, 2),
+    notes TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS cash_movements (
+    id SERIAL PRIMARY KEY,
+    cash_session_id INTEGER NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
+    movement_type TEXT NOT NULL CHECK(movement_type IN ('entrada', 'salida')),
+    amount NUMERIC(12, 2) NOT NULL,
+    description TEXT NOT NULL,
+    created_by INTEGER,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS invoice_payments (
+    id SERIAL PRIMARY KEY,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    cash_session_id INTEGER REFERENCES cash_sessions(id),
+    payment_method TEXT NOT NULL,
+    amount NUMERIC(12, 2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS preinvoices (
     id SERIAL PRIMARY KEY,
     client_id INTEGER REFERENCES clients(id),
@@ -153,6 +186,7 @@ CREATE TABLE IF NOT EXISTS credit_notes (
     total NUMERIC(12, 2) NOT NULL,
     status TEXT NOT NULL DEFAULT 'emitida',
     issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL DEFAULT '',
     fiscal_environment TEXT NOT NULL,
     provider_document_id TEXT NOT NULL DEFAULT '',
     track_id TEXT NOT NULL DEFAULT '',

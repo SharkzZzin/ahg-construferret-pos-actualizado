@@ -4,7 +4,7 @@ import sqlite3
 import json
 import secrets
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,39 @@ def clean_discount_amount(payload: dict[str, Any], max_amount: float, amount_key
     return amount
 
 
+def normalize_invoice_payments(
+    payments: list[dict[str, Any]] | None,
+    fallback_method: str,
+    amount_due: float,
+) -> list[dict[str, Any]]:
+    allowed = {"efectivo", "tarjeta", "transferencia", "paypal"}
+    amount_due = round(float(amount_due or 0), 2)
+    if fallback_method == "credito":
+        if payments:
+            raise DatabaseError("Una venta a crÃ©dito no puede combinarse con pagos inmediatos.")
+        return [{"payment_method": "credito", "amount": amount_due}] if amount_due > 0 else []
+    raw_rows = payments or ([{"payment_method": fallback_method, "amount": amount_due}] if amount_due > 0 else [])
+    if len(raw_rows) > 7:
+        raise DatabaseError("La DGII permite hasta siete formas de pago por comprobante.")
+    combined: dict[str, float] = {}
+    for row in raw_rows:
+        method = str(row.get("payment_method") or row.get("method") or "").strip().lower()
+        if method not in allowed:
+            raise DatabaseError("Forma de pago no vÃ¡lida para una venta de contado.")
+        try:
+            amount = round(float(row.get("amount") or 0), 2)
+        except (TypeError, ValueError) as exc:
+            raise DatabaseError("Cada monto de pago debe ser numÃ©rico.") from exc
+        if amount <= 0:
+            raise DatabaseError("Cada forma de pago debe tener un monto mayor que cero.")
+        combined[method] = round(combined.get(method, 0) + amount, 2)
+    normalized = [{"payment_method": method, "amount": amount} for method, amount in combined.items()]
+    paid = round(sum(row["amount"] for row in normalized), 2)
+    if abs(paid - amount_due) > 0.01:
+        raise DatabaseError(f"Los pagos suman RD${paid:,.2f} y deben cubrir RD${amount_due:,.2f}.")
+    return normalized
+
+
 def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float = 0.0) -> dict[str, float]:
     taxable_base = 0.0
     item_discount_total = 0.0
@@ -109,7 +142,7 @@ def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float 
 
 
 POSTGRES_SCHEMA_LOCK_ID = 2026081001
-POSTGRES_SCHEMA_VERSION = "2026-08-10-academic-v1"
+POSTGRES_SCHEMA_VERSION = "2026-08-11-payments-cash-v2"
 
 
 class Database:
@@ -464,6 +497,9 @@ class Database:
             "preinvoice_items": {
                 "discount_amount": numeric,
             },
+            "credit_notes": {
+                "expires_at": "TEXT NOT NULL DEFAULT ''",
+            },
         }
         for table, columns in table_columns.items():
             existing = self._column_names(table)
@@ -472,6 +508,52 @@ class Database:
                     self.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
         self.conn.commit()
         self.ensure_credit_application_table()
+        self.ensure_payment_and_cash_tables()
+
+    def ensure_payment_and_cash_tables(self) -> None:
+        numeric = "REAL" if self.kind == "sqlite" else "NUMERIC(12, 2)"
+        identity = "INTEGER PRIMARY KEY AUTOINCREMENT" if self.kind == "sqlite" else "SERIAL PRIMARY KEY"
+        timestamp = "TEXT" if self.kind == "sqlite" else "TIMESTAMPTZ"
+        self.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS cash_sessions (
+                id {identity}, opened_by INTEGER REFERENCES users(id), opened_at {timestamp} NOT NULL,
+                opening_amount {numeric} NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'abierta', closed_by INTEGER REFERENCES users(id),
+                closed_at {timestamp}, expected_cash {numeric}, counted_cash {numeric},
+                difference {numeric}, notes TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        self.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS cash_movements (
+                id {identity}, cash_session_id INTEGER NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
+                movement_type TEXT NOT NULL, amount {numeric} NOT NULL, description TEXT NOT NULL,
+                created_by INTEGER REFERENCES users(id), created_at {timestamp} NOT NULL
+            )
+            """
+        )
+        self.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS invoice_payments (
+                id {identity}, invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+                cash_session_id INTEGER REFERENCES cash_sessions(id), payment_method TEXT NOT NULL,
+                amount {numeric} NOT NULL, created_at {timestamp} NOT NULL
+            )
+            """
+        )
+        self.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_invoice_payments_session ON invoice_payments(cash_session_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(cash_session_id)")
+        self.conn.commit()
+        for row in self.fetch_all("SELECT id, issued_at FROM credit_notes WHERE COALESCE(expires_at, '') = ''"):
+            issued = self._parse_datetime(row.get("issued_at"))
+            self.execute(
+                "UPDATE credit_notes SET expires_at = ? WHERE id = ?",
+                ((issued + timedelta(days=90)).date().isoformat(), row["id"]),
+            )
+        self.conn.commit()
 
     def ensure_credit_application_table(self) -> None:
         if self.kind == "sqlite":
@@ -857,7 +939,7 @@ class Database:
             )
             saved_id = company_id
         else:
-            self.execute(
+            saved_id = self.insert_and_get_id(
                 """
                 INSERT INTO fiscal_companies(
                     workspace_name, issuer_name, issuer_rnc, company_id, base_url,
@@ -873,7 +955,6 @@ class Database:
                     user_id, user_id, now, now,
                 ),
             )
-            saved_id = self.last_insert_id()
         self.conn.commit()
         return next(row for row in self.list_fiscal_companies() if int(row["id"]) == int(saved_id))
 
@@ -1181,8 +1262,7 @@ class Database:
             if category:
                 category_id = int(category["id"])
             else:
-                self.execute("INSERT INTO categories(name) VALUES (?)", (category_name,))
-                category_id = self.last_insert_id()
+                category_id = self.insert_and_get_id("INSERT INTO categories(name) VALUES (?)", (category_name,))
             now = self.now()
             existing = self.fetch_one("SELECT id, stock FROM products WHERE id = ?", (identifier,))
             if product_id and not existing:
@@ -1340,7 +1420,7 @@ class Database:
             saved_id = int(client_id)
         else:
             internal_key = party["fiscal_id"]
-            self.execute(
+            saved_id = self.insert_and_get_id(
                 """
                 INSERT INTO clients(
                     rnc_cedula, fiscal_id, name, phone, email, address,
@@ -1355,7 +1435,6 @@ class Database:
                     party["notes"], active_value, now,
                 ),
             )
-            saved_id = self.last_insert_id()
         self.conn.commit()
         return self.get_client(saved_id)
 
@@ -1375,45 +1454,57 @@ class Database:
         return client
 
     def client_credit_balance(self, client_id: int) -> float:
+        return round(sum(float(note["available_amount"]) for note in self.available_credit_notes(client_id)), 2)
+
+    def available_credit_notes(self, client_id: int | None, note_code: str = "") -> list[dict[str, Any]]:
         if not client_id:
-            return 0.0
-        credits = float(self.scalar(
-            """
-            SELECT COALESCE(SUM(cn.total), 0)
+            return []
+        code = str(note_code or "").strip().upper()
+        where = "i.client_id = ?"
+        params: tuple[Any, ...] = (client_id,)
+        if code:
+            where = "(i.client_id = ? OR i.client_id IS NULL) AND UPPER(COALESCE(NULLIF(cn.provider_encf, ''), cn.en_ncf)) = ?"
+            params = (client_id, code)
+        rows = self.fetch_all(
+            f"""
+            SELECT cn.id, cn.en_ncf, cn.provider_encf, cn.total, cn.reason, cn.issued_at, cn.expires_at,
+                   i.client_id AS source_client_id,
+                   COALESCE(c.name, 'Consumidor Final') AS source_client_name,
+                   COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.credit_note_id = cn.id), 0) AS applied
             FROM credit_notes cn
             JOIN invoices i ON i.id = cn.source_invoice_id
-            WHERE i.client_id = ?
+            LEFT JOIN clients c ON c.id = i.client_id
+            WHERE {where}
               AND COALESCE(cn.api_error, '') = ''
-              AND COALESCE(cn.api_status, '') NOT LIKE '%Rechaz%'
+              AND LOWER(COALESCE(cn.api_status, '')) LIKE '%acept%'
+              AND (COALESCE(cn.expires_at, '') = '' OR cn.expires_at >= ?)
+            ORDER BY cn.id
             """,
-            (client_id,),
-        ) or 0)
-        applied = float(self.scalar(
-            "SELECT COALESCE(SUM(amount), 0) FROM credit_applications WHERE client_id = ?",
-            (client_id,),
-        ) or 0)
-        return round(max(0.0, credits - applied), 2)
+            params + (date.today().isoformat(),),
+        )
+        available: list[dict[str, Any]] = []
+        for row in rows:
+            row["display_encf"] = row.get("provider_encf") or row.get("en_ncf") or ""
+            row["available_amount"] = round(max(0.0, float(row["total"]) - float(row["applied"] or 0)), 2)
+            row["credit_status"] = "vigente"
+            if row["available_amount"] > 0:
+                available.append(row)
+        return available
 
-    def apply_client_credit(self, client_id: int | None, invoice_id: int, amount: float) -> float:
+    def apply_client_credit(
+        self,
+        client_id: int | None,
+        invoice_id: int,
+        amount: float,
+        note_code: str = "",
+    ) -> float:
         if not client_id or amount <= 0:
             return 0.0
         remaining = round(float(amount), 2)
         applied_total = 0.0
-        notes = self.fetch_all(
-            """
-            SELECT cn.id, cn.total,
-                   COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.credit_note_id = cn.id), 0) AS applied
-            FROM credit_notes cn
-            JOIN invoices i ON i.id = cn.source_invoice_id
-            WHERE i.client_id = ?
-              AND COALESCE(cn.api_error, '') = ''
-              AND COALESCE(cn.api_status, '') NOT LIKE '%Rechaz%'
-            ORDER BY cn.id
-            """,
-            (client_id,),
-        )
+        notes = self.available_credit_notes(client_id, note_code)
         for note in notes:
-            available = round(float(note["total"]) - float(note["applied"] or 0), 2)
+            available = float(note["available_amount"])
             if available <= 0:
                 continue
             applied = min(available, remaining)
@@ -1501,7 +1592,7 @@ class Database:
             )
             saved_id = int(supplier_id)
         else:
-            self.execute(
+            saved_id = self.insert_and_get_id(
                 """
                 INSERT INTO suppliers(
                     rnc_cedula, name, phone, email, address, contact_person,
@@ -1516,7 +1607,6 @@ class Database:
                     party["notes"], active_value, now, now,
                 ),
             )
-            saved_id = self.last_insert_id()
         self.conn.commit()
         return self.get_supplier(saved_id)
 
@@ -1551,7 +1641,7 @@ class Database:
     ) -> dict[str, Any]:
         fiscal = fiscal or {}
         now = self.now()
-        self.execute(
+        request_id = self.insert_and_get_id(
             """
             INSERT INTO public_quote_requests(
                 customer_name, phone, email, problem, items_json,
@@ -1569,7 +1659,6 @@ class Database:
             ),
         )
         self.conn.commit()
-        request_id = self.last_insert_id()
         return self.get_public_quote_request(request_id)
 
     def list_users(self) -> list[dict[str, Any]]:
@@ -1606,8 +1695,7 @@ class Database:
                     self.execute("UPDATE users SET name = ?, email = ?, phone = ?, role = ?, active = ? WHERE id = ?", (name, email, phone, role, active_value, int(user_id)))
                 saved_id = int(user_id)
             else:
-                self.execute("INSERT INTO users(name, email, phone, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (name, email, phone, hash_password(password), role, active_value, now))
-                saved_id = self.last_insert_id()
+                saved_id = self.insert_and_get_id("INSERT INTO users(name, email, phone, password_hash, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (name, email, phone, hash_password(password), role, active_value, now))
             self.conn.commit()
         except Exception as exc:
             self.conn.rollback()
@@ -1779,7 +1867,7 @@ class Database:
                 self.execute("DELETE FROM preinvoice_items WHERE preinvoice_id = ?", (preinvoice_id,))
                 saved_id = int(preinvoice_id)
             else:
-                self.execute(
+                saved_id = self.insert_and_get_id(
                     """
                     INSERT INTO preinvoices(
                         client_id, ecf_type, payment_method, notes, subtotal,
@@ -1792,7 +1880,6 @@ class Database:
                         discount_total, general_discount, tax, total, "borrador", user_id, now, now,
                     ),
                 )
-                saved_id = self.last_insert_id()
             for line in lines:
                 self.execute(
                     """
@@ -1829,6 +1916,7 @@ class Database:
         modification_code: str,
         reason: str,
         fiscal_environment: str,
+        expires_at: str = "",
     ) -> dict[str, Any]:
         if modification_code not in {"1", "2", "3"}:
             raise DatabaseError("El código de modificación E34 debe ser 1, 2 o 3.")
@@ -1851,21 +1939,27 @@ class Database:
             en_ncf = f"E34{number:010d}"
             self.execute("UPDATE credit_note_sequences SET current_number = ? WHERE id = 1", (number + 1,))
             now = self.now()
-            self.execute(
+            issued_date = self._parse_datetime(now).date()
+            try:
+                expiry_date = date.fromisoformat(str(expires_at or "").strip()) if expires_at else issued_date + timedelta(days=90)
+            except ValueError as exc:
+                raise DatabaseError("La fecha de expiraciÃ³n del saldo no es vÃ¡lida.") from exc
+            if expiry_date < issued_date:
+                raise DatabaseError("La vigencia comercial no puede vencer antes de emitirse la nota.")
+            note_id = self.insert_and_get_id(
                 """
                 INSERT INTO credit_notes(
                     source_invoice_id, en_ncf, modification_code, reason,
-                    subtotal, tax, total, status, issued_at, fiscal_environment
+                    subtotal, tax, total, status, issued_at, expires_at, fiscal_environment
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_invoice_id, en_ncf, modification_code, reason,
                     source["subtotal"], source["tax"], source["total"],
-                    "emitida", now, fiscal_environment,
+                    "emitida", now, expiry_date.isoformat(), fiscal_environment,
                 ),
             )
-            note_id = self.last_insert_id()
             self.conn.commit()
             return self.get_credit_note(note_id)
         except Exception:
@@ -1901,21 +1995,34 @@ class Database:
             """,
             (note["source_invoice_id"],),
         )
+        note["applied_amount"] = float(self.scalar(
+            "SELECT COALESCE(SUM(amount), 0) FROM credit_applications WHERE credit_note_id = ?",
+            (note_id,),
+        ) or 0)
+        note["available_amount"] = round(max(0.0, float(note["total"]) - note["applied_amount"]), 2)
+        self._decorate_credit_note(note)
         return note
 
     def list_credit_notes(self) -> list[dict[str, Any]]:
-        return self.fetch_all(
+        rows = self.fetch_all(
             """
             SELECT cn.id, cn.source_invoice_id, cn.en_ncf, cn.provider_encf,
                    cn.modification_code, cn.reason, cn.total, cn.status,
-                   cn.api_status, cn.api_error, cn.track_id, cn.provider_document_id, cn.issued_at,
-                   COALESCE(api.encf, i.en_ncf) AS source_encf
+                   cn.api_status, cn.api_error, cn.track_id, cn.provider_document_id, cn.issued_at, cn.expires_at,
+                   COALESCE(api.encf, i.en_ncf) AS source_encf,
+                   COALESCE(c.name, 'Consumidor Final') AS source_client_name,
+                   COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.credit_note_id = cn.id), 0) AS applied_amount
             FROM credit_notes cn
             JOIN invoices i ON i.id = cn.source_invoice_id
+            LEFT JOIN clients c ON c.id = i.client_id
             LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
             ORDER BY cn.id DESC
             """
         )
+        for row in rows:
+            row["available_amount"] = round(max(0.0, float(row["total"]) - float(row.get("applied_amount") or 0)), 2)
+            self._decorate_credit_note(row)
+        return rows
 
     def list_credit_notes_page(self, page: int = 1, limit: int = 25) -> dict[str, Any]:
         page, limit = self.normalize_page(page, limit)
@@ -1924,15 +2031,34 @@ class Database:
             """
             SELECT cn.id, cn.source_invoice_id, cn.en_ncf, cn.provider_encf,
                    cn.modification_code, cn.reason, cn.total, cn.status,
-                   cn.api_status, cn.api_error, cn.track_id, cn.provider_document_id, cn.issued_at,
-                   COALESCE(api.encf, i.en_ncf) AS source_encf
+                   cn.api_status, cn.api_error, cn.track_id, cn.provider_document_id, cn.issued_at, cn.expires_at,
+                   COALESCE(api.encf, i.en_ncf) AS source_encf,
+                   COALESCE(c.name, 'Consumidor Final') AS source_client_name,
+                   COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.credit_note_id = cn.id), 0) AS applied_amount
             FROM credit_notes cn JOIN invoices i ON i.id = cn.source_invoice_id
+            LEFT JOIN clients c ON c.id = i.client_id
             LEFT JOIN ecf_api_records api ON api.invoice_id = i.id
             ORDER BY cn.id DESC LIMIT ? OFFSET ?
             """,
             (limit, (page - 1) * limit),
         )
+        for row in rows:
+            row["available_amount"] = round(max(0.0, float(row["total"]) - float(row.get("applied_amount") or 0)), 2)
+            self._decorate_credit_note(row)
         return self.page_result(rows, total, page, limit)
+
+    def _decorate_credit_note(self, note: dict[str, Any]) -> None:
+        status = str(note.get("api_status") or note.get("status") or "").lower()
+        if note.get("api_error") or "rechaz" in status:
+            note["credit_status"] = "rechazada"
+        elif "acept" not in status:
+            note["credit_status"] = "pendiente"
+        elif note.get("expires_at") and str(note["expires_at"]) < date.today().isoformat():
+            note["credit_status"] = "vencida"
+        elif float(note.get("available_amount") or 0) <= 0:
+            note["credit_status"] = "agotada"
+        else:
+            note["credit_status"] = "vigente"
 
     def save_credit_note_api_result(
         self,
@@ -1963,6 +2089,122 @@ class Database:
             ),
         )
         self.conn.commit()
+
+    def get_open_cash_session(self) -> dict[str, Any] | None:
+        return self.fetch_one(
+            "SELECT * FROM cash_sessions WHERE status = 'abierta' ORDER BY id DESC LIMIT 1"
+        )
+
+    def open_cash_session(self, user_id: int, opening_amount: float, notes: str = "") -> dict[str, Any]:
+        if self.get_open_cash_session():
+            raise DatabaseError("Ya existe una caja abierta. Debes cerrarla antes de iniciar otra.")
+        amount = round(float(opening_amount or 0), 2)
+        if amount < 0:
+            raise DatabaseError("El fondo inicial no puede ser negativo.")
+        session_id = self.insert_and_get_id(
+            """
+            INSERT INTO cash_sessions(opened_by, opened_at, opening_amount, status, notes)
+            VALUES (?, ?, ?, 'abierta', ?)
+            """,
+            (user_id, self.now(), amount, str(notes or "").strip()[:500]),
+        )
+        self.conn.commit()
+        return self.cash_session_detail(session_id)
+
+    def add_cash_movement(
+        self, user_id: int, movement_type: str, amount: float, description: str
+    ) -> dict[str, Any]:
+        session = self.get_open_cash_session()
+        if not session:
+            raise DatabaseError("Abre la caja antes de registrar movimientos.")
+        movement_type = str(movement_type or "").strip().lower()
+        if movement_type not in {"entrada", "salida"}:
+            raise DatabaseError("El movimiento debe ser una entrada o una salida.")
+        value = round(float(amount or 0), 2)
+        description = str(description or "").strip()
+        if value <= 0:
+            raise DatabaseError("El monto del movimiento debe ser mayor que cero.")
+        if len(description) < 3:
+            raise DatabaseError("Describe el motivo del movimiento de caja.")
+        self.execute(
+            """
+            INSERT INTO cash_movements(cash_session_id, movement_type, amount, description, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session["id"], movement_type, value, description[:300], user_id, self.now()),
+        )
+        self.conn.commit()
+        return self.cash_session_detail(int(session["id"]))
+
+    def cash_session_detail(self, session_id: int | None = None) -> dict[str, Any]:
+        if session_id is None:
+            session = self.get_open_cash_session() or self.fetch_one(
+                "SELECT * FROM cash_sessions ORDER BY id DESC LIMIT 1"
+            )
+        else:
+            session = self.fetch_one("SELECT * FROM cash_sessions WHERE id = ?", (session_id,))
+        if not session:
+            return {"status": "sin_apertura", "payments": [], "movements": [], "expected_cash": 0.0}
+        payment_rows = self.fetch_all(
+            """
+            SELECT payment_method, COALESCE(SUM(amount), 0) AS amount
+            FROM invoice_payments WHERE cash_session_id = ?
+            GROUP BY payment_method ORDER BY payment_method
+            """,
+            (session["id"],),
+        )
+        movements = self.fetch_all(
+            """
+            SELECT cm.*, COALESCE(u.name, 'Sistema') AS user_name
+            FROM cash_movements cm LEFT JOIN users u ON u.id = cm.created_by
+            WHERE cm.cash_session_id = ? ORDER BY cm.id DESC
+            """,
+            (session["id"],),
+        )
+        cash_sales = sum(float(row["amount"]) for row in payment_rows if row["payment_method"] == "efectivo")
+        entries = sum(float(row["amount"]) for row in movements if row["movement_type"] == "entrada")
+        exits = sum(float(row["amount"]) for row in movements if row["movement_type"] == "salida")
+        expected = round(float(session.get("opening_amount") or 0) + cash_sales + entries - exits, 2)
+        session["payments"] = payment_rows
+        session["movements"] = movements
+        session["cash_sales"] = round(cash_sales, 2)
+        session["cash_entries"] = round(entries, 2)
+        session["cash_exits"] = round(exits, 2)
+        session["expected_cash"] = round(float(session.get("expected_cash") if session.get("expected_cash") is not None else expected), 2)
+        session["invoice_count"] = int(self.scalar(
+            "SELECT COUNT(DISTINCT invoice_id) FROM invoice_payments WHERE cash_session_id = ?",
+            (session["id"],),
+        ) or 0)
+        return session
+
+    def close_cash_session(self, user_id: int, counted_cash: float, notes: str = "") -> dict[str, Any]:
+        session = self.get_open_cash_session()
+        if not session:
+            raise DatabaseError("No hay una caja abierta para cerrar.")
+        counted = round(float(counted_cash or 0), 2)
+        if counted < 0:
+            raise DatabaseError("El efectivo contado no puede ser negativo.")
+        detail = self.cash_session_detail(int(session["id"]))
+        expected = round(float(detail["expected_cash"]), 2)
+        difference = round(counted - expected, 2)
+        merged_notes = " | ".join(part for part in (str(session.get("notes") or "").strip(), str(notes or "").strip()) if part)[:500]
+        self.execute(
+            """
+            UPDATE cash_sessions SET status = 'cerrada', closed_by = ?, closed_at = ?,
+                expected_cash = ?, counted_cash = ?, difference = ?, notes = ? WHERE id = ?
+            """,
+            (user_id, self.now(), expected, counted, difference, merged_notes, session["id"]),
+        )
+        self.conn.commit()
+        return self.cash_session_detail(int(session["id"]))
+
+    def list_cash_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.fetch_all("SELECT * FROM cash_sessions ORDER BY id DESC LIMIT ?", (min(100, max(1, int(limit))),))
+        for row in rows:
+            if row["status"] == "abierta":
+                current = self.cash_session_detail(int(row["id"]))
+                row.update({key: current.get(key) for key in ("expected_cash", "cash_sales", "invoice_count")})
+        return rows
 
     @staticmethod
     def _non_negative(value: Any, label: str) -> float:
@@ -2162,6 +2404,9 @@ class Database:
         fiscal_environment: str | None = None,
         general_discount: float = 0.0,
         general_discount_percent: float = 0.0,
+        credit_amount: float = 0.0,
+        credit_note_code: str = "",
+        payments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if ecf_type not in {"31", "32"}:
             raise DatabaseError("Solo se permiten e-CF tipo 31 o 32 en esta fase.")
@@ -2227,12 +2472,33 @@ class Database:
             if total <= 0:
                 raise DatabaseError("La factura fiscal debe tener un total mayor que cero.")
             client_id = self._ensure_client(client or {}, ecf_type, total)
-            available_credit = self.client_credit_balance(client_id or 0)
-            credit_applied = round(min(total, available_credit), 2)
+            requested_credit = round(float(credit_amount or 0), 2)
+            if requested_credit < 0:
+                raise DatabaseError("El monto de la nota de crédito no puede ser negativo.")
+            if requested_credit > 0 and not client_id:
+                raise DatabaseError("Selecciona un cliente registrado para aplicar la nota de crédito.")
+            if requested_credit > 0 and payment_method == "credito":
+                raise DatabaseError("No se puede combinar una nota de crédito con una venta pendiente a crédito.")
+            available_notes = self.available_credit_notes(client_id, credit_note_code) if requested_credit > 0 else []
+            available_credit = round(sum(float(note["available_amount"]) for note in available_notes), 2)
+            if requested_credit > available_credit:
+                raise DatabaseError(f"Crédito insuficiente. Disponible: RD${available_credit:,.2f}.")
+            if requested_credit > total:
+                raise DatabaseError("El crédito aplicado no puede superar el total de la venta.")
+            credit_applied = requested_credit
             payable_total = round(total - credit_applied, 2)
+            tender_rows = normalize_invoice_payments(payments, payment_method, payable_total)
+            fiscal_payment_rows = ([{"payment_method": "nota_credito", "amount": credit_applied}] if credit_applied > 0 else []) + tender_rows
+            if len(fiscal_payment_rows) > 7:
+                raise DatabaseError("La nota de crÃ©dito y los demÃ¡s pagos superan las siete formas permitidas por DGII.")
+            if payment_method != "credito":
+                methods = [row["payment_method"] for row in tender_rows]
+                stored_payment_method = "mixto" if len(methods) > 1 else (methods[0] if methods else "nota_credito")
+            else:
+                stored_payment_method = "credito"
             sequence = self._next_sequence(ecf_type)
             issued_at = self.now()
-            self.execute(
+            invoice_id = self.insert_and_get_id(
                 """
                 INSERT INTO invoices(
                     en_ncf, ecf_type, client_id, subtotal, discount_total, general_discount, credit_applied, tax, total,
@@ -2249,16 +2515,17 @@ class Database:
                     general_discount,
                     credit_applied,
                     tax,
-                    payable_total,
+                    total,
                     "emitida",
-                    payment_method,
+                    stored_payment_method,
                     issued_at,
                     fiscal_environment or settings.fiscal_environment,
                 ),
             )
-            invoice_id = self.last_insert_id()
             if credit_applied > 0:
-                self.apply_client_credit(client_id, invoice_id, credit_applied)
+                applied = self.apply_client_credit(client_id, invoice_id, credit_applied, credit_note_code)
+                if applied != credit_applied:
+                    raise DatabaseError("No se pudo reservar el saldo completo de la nota de crédito.")
 
             for line in invoice_items:
                 self.execute(
@@ -2293,10 +2560,21 @@ class Database:
                     (line["product_id"], "venta", -line["quantity"], sequence, issued_at),
                 )
 
-            self.execute(
-                "INSERT INTO daily_transactions(invoice_id, amount, payment_method, created_at) VALUES (?, ?, ?, ?)",
-                (invoice_id, payable_total, payment_method, issued_at),
-            )
+            cash_session = self.get_open_cash_session()
+            cash_session_id = int(cash_session["id"]) if cash_session else None
+            for row in fiscal_payment_rows:
+                self.execute(
+                    """
+                    INSERT INTO invoice_payments(invoice_id, cash_session_id, payment_method, amount, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (invoice_id, cash_session_id, row["payment_method"], row["amount"], issued_at),
+                )
+            for row in tender_rows:
+                self.execute(
+                    "INSERT INTO daily_transactions(invoice_id, amount, payment_method, created_at) VALUES (?, ?, ?, ?)",
+                    (invoice_id, row["amount"], row["payment_method"], issued_at),
+                )
             self.conn.commit()
             tracking_token = secrets.token_urlsafe(32)
             self.execute(
@@ -2343,6 +2621,13 @@ class Database:
             JOIN products p ON p.id = ii.product_id
             WHERE ii.invoice_id = ?
             ORDER BY ii.id
+            """,
+            (invoice_id,),
+        )
+        invoice["payments"] = self.fetch_all(
+            """
+            SELECT payment_method, amount, cash_session_id, created_at
+            FROM invoice_payments WHERE invoice_id = ? ORDER BY id
             """,
             (invoice_id,),
         )
@@ -2508,13 +2793,30 @@ class Database:
     def execute(self, sql: str, params: tuple[Any, ...] = ()):
         return self.conn.execute(self._sql(sql), params)
 
-    def last_insert_id(self) -> int:
-        if self.kind == "sqlite":
-            return int(self.scalar("SELECT last_insert_rowid()"))
-        return int(self.scalar("SELECT LASTVAL()"))
+    def insert_and_get_id(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """Return the id produced by this insert without consulting session-wide sequence state."""
+        if self.kind == "postgres":
+            statement = sql.rstrip().rstrip(";")
+            cursor = self.execute(f"{statement} RETURNING id", params)
+            row = cursor.fetchone()
+            if row is None:
+                raise DatabaseError("La insercion no devolvio un identificador.")
+            return int(row["id"] if isinstance(row, dict) else row[0])
+        cursor = self.execute(sql, params)
+        if cursor.lastrowid is None:
+            raise DatabaseError("La insercion no devolvio un identificador.")
+        return int(cursor.lastrowid)
 
     def now(self) -> str:
         return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime:
+        text = str(value or "").strip().replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return datetime.now(timezone.utc)
 
     def _ensure_client(self, client: dict[str, Any], ecf_type: str, total: float = 0) -> int | None:
         selected_id = int(client.get("id") or 0)

@@ -47,6 +47,8 @@ class Settings:
         "AHG_COMPANY_ADDRESS",
         "Santiago de los Caballeros, República Dominicana",
     )
+    company_municipality: str = os.getenv("AHG_COMPANY_MUNICIPALITY", "Santiago de los Caballeros")
+    company_province: str = os.getenv("AHG_COMPANY_PROVINCE", "Santiago")
     fiscal_environment: str = (
         "test" if os.getenv("AHG_ACADEMIC_MODE", "1") != "0"
         else os.getenv("AHG_FISCAL_ENV", "test")

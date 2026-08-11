@@ -7,10 +7,14 @@ from ahg_pos.billing_api import (
     build_credit_note_payload,
     build_send_payload,
     extract_document_metadata,
+    format_api_date,
 )
 
 
 class BillingPayloadTests(unittest.TestCase):
+    def test_formats_utc_timestamp_in_dgii_gmt_minus_four(self) -> None:
+        self.assertEqual(format_api_date("2026-08-11T03:55:00+00:00"), "10-08-2026")
+
     def test_builds_documented_credit_fiscal_payload(self) -> None:
         payload = build_send_payload(
             {
@@ -139,6 +143,49 @@ class BillingPayloadTests(unittest.TestCase):
         )
         self.assertEqual(payload["ECF"]["Encabezado"]["IdDoc"]["TablaFormasPago"]["FormaDePago"][0]["FormaPago"], 8)
 
+    def test_credit_note_is_reported_as_payment_without_reducing_fiscal_total(self) -> None:
+        payload = build_send_payload(
+            {
+                "ecf_type": "32",
+                "payment_method": "efectivo",
+                "subtotal": 100,
+                "tax": 18,
+                "total": 118,
+                "credit_applied": 50,
+                "items": [{"name": "Articulo", "quantity": 1, "unit_price": 100, "line_subtotal": 100}],
+            }
+        )
+        header = payload["ECF"]["Encabezado"]
+        self.assertEqual(header["Totales"]["MontoTotal"], "118.00")
+        payments = header["IdDoc"]["TablaFormasPago"]["FormaDePago"]
+        self.assertEqual(payments, [
+            {"FormaPago": 7, "MontoPago": "50.00"},
+            {"FormaPago": 1, "MontoPago": "68.00"},
+        ])
+
+    def test_mixed_cash_and_card_are_sent_as_separate_dgii_payments(self) -> None:
+        payload = build_send_payload(
+            {
+                "ecf_type": "32",
+                "payment_method": "mixto",
+                "subtotal": 100,
+                "tax": 18,
+                "total": 118,
+                "payments": [
+                    {"payment_method": "efectivo", "amount": 40},
+                    {"payment_method": "tarjeta", "amount": 78},
+                ],
+                "items": [{"name": "Articulo", "quantity": 1, "unit_price": 100, "line_subtotal": 100}],
+            }
+        )
+        self.assertEqual(
+            payload["ECF"]["Encabezado"]["IdDoc"]["TablaFormasPago"]["FormaDePago"],
+            [
+                {"FormaPago": 1, "MontoPago": "40.00"},
+                {"FormaPago": 3, "MontoPago": "78.00"},
+            ],
+        )
+
     def test_invoice_discount_payload(self) -> None:
         payload = build_send_payload(
             {
@@ -221,6 +268,23 @@ class BillingPayloadTests(unittest.TestCase):
         self.assertNotIn("IndicadorEnvioDiferido", payload["ECF"]["Encabezado"]["IdDoc"])
         self.assertEqual(payload["ECF"]["InformacionReferencia"]["NCFModificado"], "E310000000001")
         self.assertEqual(payload["ECF"]["InformacionReferencia"]["CodigoModificacion"], "1")
+
+    def test_e34_reference_uses_dgii_local_date_for_utc_source(self) -> None:
+        payload = build_credit_note_payload(
+            {
+                "source_encf": "E320000001231",
+                "source_ecf_type": "32",
+                "source_issued_at": "2026-08-11T03:55:00+00:00",
+                "issued_at": "2026-08-11T03:56:00+00:00",
+                "modification_code": "1",
+                "reason": "Devolucion total",
+                "subtotal": 623,
+                "tax": 112.14,
+                "total": 735.14,
+                "items": [{"name": "Gato hidraulico", "quantity": 1, "unit_price": 623, "line_subtotal": 623}],
+            }
+        )
+        self.assertEqual(payload["ECF"]["InformacionReferencia"]["FechaNCFModificado"], "10-08-2026")
 
     def test_e34_sets_late_credit_note_indicator_after_30_days(self) -> None:
         payload = build_credit_note_payload(

@@ -122,6 +122,92 @@ class ProductMasterTests(unittest.TestCase):
         self.assertEqual(saved["email"], "cliente@example.com")
         self.assertEqual(saved["items"][0]["quantity"], 2)
 
+    def test_redeems_anonymous_e34_voucher_without_changing_new_invoice_total(self) -> None:
+        product = self.db.save_product(
+            {
+                "id": "CREDIT-001",
+                "sku": "CREDIT-001",
+                "name": "Producto para canje",
+                "category": "Herramientas",
+                "cost": 50,
+                "price": 100,
+                "stock": 10,
+                "min_stock": 1,
+                "tax_rate": 18,
+            }
+        )
+        source = self.db.create_invoice(
+            "32", {},
+            [{"product_id": product["id"], "quantity": 1, "unit_price": 100}],
+            payment_method="efectivo",
+        )
+        self.db.save_ecf_api_record(
+            int(source["id"]),
+            {"provider_document_id": "invoice-source", "track_id": "track-source", "encf": "E320000009991", "api_status": "Aceptado"},
+        )
+        note = self.db.create_credit_note(int(source["id"]), "1", "Devolucion total", "test")
+        self.db.save_credit_note_api_result(
+            int(note["id"]),
+            {"provider_document_id": "credit-source", "track_id": "track-credit", "encf": "E340000009991", "api_status": "Aceptado"},
+            {},
+            {},
+        )
+        client = self.db.save_client(
+            {
+                "name": "Cliente que presenta el vale",
+                "rnc_cedula": "40255512345",
+                "phone": "8095550000",
+                "email": "vale@example.com",
+                "address": "Santiago",
+            }
+        )
+
+        redeemed = self.db.create_invoice(
+            "32",
+            {"id": client["id"]},
+            [{"product_id": product["id"], "quantity": 1, "unit_price": 100}],
+            payment_method="efectivo",
+            credit_amount=50,
+            credit_note_code="E340000009991",
+        )
+
+        self.assertEqual(float(redeemed["total"]), 118)
+        self.assertEqual(float(redeemed["credit_applied"]), 50)
+        transaction = self.db.fetch_one("SELECT amount FROM daily_transactions WHERE invoice_id = ?", (redeemed["id"],))
+        self.assertEqual(float(transaction["amount"]), 68)
+        available = self.db.available_credit_notes(int(client["id"]), "E340000009991")
+        self.assertEqual(float(available[0]["available_amount"]), 68)
+
+    def test_mixed_payment_is_persisted_and_included_in_cash_close(self) -> None:
+        product = self.db.save_product(
+            {"id": "MIX-001", "sku": "MIX-001", "name": "Producto mixto", "category": "Herramientas", "cost": 50, "price": 100, "stock": 5, "min_stock": 1, "tax_rate": 18}
+        )
+        session = self.db.open_cash_session(1, 500, "Inicio")
+        invoice = self.db.create_invoice(
+            "32", {}, [{"product_id": product["id"], "quantity": 1, "unit_price": 100}],
+            payment_method="efectivo",
+            payments=[{"payment_method": "efectivo", "amount": 40}, {"payment_method": "tarjeta", "amount": 78}],
+        )
+        self.assertEqual(invoice["payment_method"], "mixto")
+        self.assertEqual([(row["payment_method"], float(row["amount"])) for row in invoice["payments"]], [("efectivo", 40), ("tarjeta", 78)])
+        detail = self.db.cash_session_detail(int(session["id"]))
+        self.assertEqual(float(detail["expected_cash"]), 540)
+        closed = self.db.close_cash_session(1, 535, "Conteo")
+        self.assertEqual(float(closed["difference"]), -5)
+
+    def test_expired_credit_note_is_not_available(self) -> None:
+        product = self.db.save_product(
+            {"id": "EXP-001", "sku": "EXP-001", "name": "Producto crédito", "category": "Herramientas", "cost": 50, "price": 100, "stock": 5, "min_stock": 1, "tax_rate": 18}
+        )
+        source = self.db.create_invoice("32", {}, [{"product_id": product["id"], "quantity": 1, "unit_price": 100}])
+        self.db.save_ecf_api_record(int(source["id"]), {"provider_document_id": "source", "encf": "E320000008881", "api_status": "Aceptado"})
+        note = self.db.create_credit_note(int(source["id"]), "1", "Devolución total", "test")
+        self.db.save_credit_note_api_result(int(note["id"]), {"provider_document_id": "note", "encf": "E340000008881", "api_status": "Aceptado"}, {}, {})
+        self.db.execute("UPDATE credit_notes SET expires_at = '2020-01-01' WHERE id = ?", (note["id"],))
+        self.db.conn.commit()
+        self.assertEqual(self.db.get_credit_note(int(note["id"]))["credit_status"], "vencida")
+        self.assertEqual(self.db.available_credit_notes(1, "E340000008881"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

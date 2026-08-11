@@ -21,7 +21,7 @@
         <img class="topbar-logo" src="/static/logo-ahg.png" alt="AHG Construferret" />
         <p class="eyebrow">Sistema de ventas y recomendaciones con IA</p>
         <h1>AHG CONSTRUFERRET</h1>
-        <p id="issuer-label" class="issuer-label">Emisor académico: UTESA · Ambiente de prueba</p>
+        <p id="issuer-label" class="issuer-label">Emisor TESTeCF: UTESA · Ambiente de prueba</p>
       </div>
       <div class="status-strip">
         <span id="db-status" class="status-pill">BD</span>
@@ -41,6 +41,7 @@
       <button class="tab" data-view="inventory">Inventario</button>
       <button class="tab" data-view="fiscal">Gestión Fiscal</button>
       <button class="tab" data-view="reports">Facturas</button>
+      <button class="tab" data-view="cash">Cuadre de caja</button>
       <button class="tab" data-view="audit">Auditoría</button>
       <button class="tab" data-view="admin">Administración</button>
     </nav>
@@ -77,8 +78,8 @@
 
             <div class="fiscal-box">
               <div class="fiscal-note">
-                <strong id="fiscal-mode-title">Simulación fiscal académica</strong>
-                <span id="fiscal-mode-copy">El comprobante demostrativo se guardará sin validez ante la DGII.</span>
+                <strong id="fiscal-mode-title">Emisión e-CF en TESTeCF</strong>
+                <span id="fiscal-mode-copy">Los comprobantes se emiten sin validez fiscal en el ambiente de prueba.</span>
               </div>
               <div class="segmented" role="group" aria-label="Tipo de comprobante">
                 <button class="segment active" data-ecf="32">e-CF 32</button>
@@ -124,6 +125,37 @@
                     <option value="credito">Crédito</option>
                   </select>
                 </label>
+                <label class="split-payment-toggle">
+                  Pago con dos formas
+                  <span><input id="split-payment-enabled" type="checkbox" /> Dividir el monto a cobrar</span>
+                </label>
+              </div>
+              <div id="split-payment-panel" class="split-payment-panel" hidden>
+                <label>Monto en la primera forma<input id="primary-payment-amount" class="input" type="number" min="0.01" step="0.01" /></label>
+                <label>Segunda forma<select id="secondary-payment-method" class="input"><option value="tarjeta">Tarjeta</option><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="paypal">PayPal</option></select></label>
+                <label>Monto restante<input id="secondary-payment-amount" class="input" type="number" readonly /></label>
+                <p id="split-payment-summary" class="field-help"></p>
+              </div>
+              <div id="credit-redemption" class="credit-redemption">
+                <div class="credit-redemption-head">
+                  <div>
+                    <strong>Usar nota de crédito</strong>
+                    <span>Se aplica como forma de pago; no reduce el total fiscal de la venta.</span>
+                  </div>
+                  <button id="check-credit" class="secondary-button compact" type="button">Consultar saldo</button>
+                </div>
+                <div class="form-grid">
+                  <label>
+                    e-NCF del vale (opcional)
+                    <input id="credit-note-code" class="input" maxlength="13" placeholder="E340000000000" autocomplete="off" />
+                  </label>
+                  <label>
+                    Monto a aplicar
+                    <input id="credit-amount" class="input" type="number" min="0" step="0.01" value="0" />
+                  </label>
+                </div>
+                <p id="credit-availability" class="credit-availability">Selecciona un cliente registrado para consultar su saldo.</p>
+                <div id="available-credit-list" class="available-credit-list"></div>
               </div>
               <label>
                 Nota de la pre-factura
@@ -145,12 +177,14 @@
               <div><span>Subtotal</span><strong id="subtotal">RD$0.00</strong></div>
               <div><span>Descuento</span><strong id="discount-total">RD$0.00</strong></div>
               <div><span>ITBIS 18%</span><strong id="tax">RD$0.00</strong></div>
+              <div id="credit-applied-row" hidden><span>Nota de crédito aplicada</span><strong id="credit-applied">-RD$0.00</strong></div>
               <div class="grand-total"><span>Total</span><strong id="total">RD$0.00</strong></div>
+              <div id="amount-due-row" class="grand-total" hidden><span>Monto a cobrar</span><strong id="amount-due">RD$0.00</strong></div>
             </div>
 
             <div class="checkout-actions">
               <button id="save-preinvoice" class="secondary-button">Guardar pre-factura</button>
-              <button id="issue-invoice" class="primary-button">Simular comprobante</button>
+              <button id="issue-invoice" class="primary-button">Emitir comprobante de prueba</button>
             </div>
           </section>
         </div>
@@ -406,6 +440,22 @@
         </section>
       </section>
 
+      <section id="cash" class="view">
+        <div class="panel-head section-head"><div><p class="eyebrow">Control diario</p><h2>Cuadre de caja</h2><p class="section-copy">Abre un turno, registra entradas o salidas y compara el efectivo esperado con el contado.</p></div><button id="refresh-cash" class="secondary-button">Actualizar</button></div>
+        <div id="cash-session-summary" class="fiscal-metrics cash-metrics"></div>
+        <div class="cash-layout">
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Turno</p><h2 id="cash-action-title">Abrir caja</h2></div></div>
+            <form id="cash-open-form" class="cash-form"><label>Fondo inicial<input id="cash-opening-amount" class="input" type="number" min="0" step="0.01" value="0" /></label><label>Nota de apertura<input id="cash-opening-notes" class="input" maxlength="300" /></label><button class="primary-button" type="submit">Abrir caja</button></form>
+            <form id="cash-close-form" class="cash-form" hidden><label>Efectivo contado<input id="cash-counted-amount" class="input" type="number" min="0" step="0.01" required /></label><label>Observaci&oacute;n de cierre<input id="cash-closing-notes" class="input" maxlength="300" /></label><button class="primary-button" type="submit">Cerrar y cuadrar</button></form>
+          </section>
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Ajustes</p><h2>Entradas y salidas</h2></div></div>
+            <form id="cash-movement-form" class="cash-form"><label>Tipo<select id="cash-movement-type" class="input"><option value="entrada">Entrada</option><option value="salida">Salida</option></select></label><label>Monto<input id="cash-movement-amount" class="input" type="number" min="0.01" step="0.01" required /></label><label>Motivo<input id="cash-movement-description" class="input" maxlength="300" required /></label><button class="secondary-button" type="submit">Registrar movimiento</button></form>
+          </section>
+        </div>
+        <section class="panel cash-detail-panel"><div class="panel-head"><div><p class="eyebrow">Desglose</p><h2>Pagos y movimientos del turno</h2></div></div><div id="cash-payment-breakdown" class="cash-breakdown"></div><div id="cash-movement-list" class="cash-movement-list"></div></section>
+        <section class="panel cash-history-panel"><div class="panel-head"><div><p class="eyebrow">Historial</p><h2>Cierres recientes</h2></div></div><div id="cash-history" class="cash-history"></div></section>
+      </section>
+
       <section id="admin" class="view">
         <div class="master-layout">
           <section class="panel product-form-panel"><div class="panel-head"><div><p class="eyebrow">Seguridad</p><h2 id="user-form-title">Nuevo usuario</h2></div><button id="save-user" class="primary-button compact" type="submit" form="user-form">Guardar usuario</button></div><form id="user-form" class="product-form"><input id="user-form-id" type="hidden" /><label>Nombre<input id="user-name" class="input" maxlength="150" required /></label><div class="form-grid"><label>Correo<input id="user-email" class="input" type="email" required /></label><label>Teléfono<input id="user-phone" class="input" inputmode="numeric" /></label><label>Rol<select id="user-role" class="input"><option value="cajero">Cajero</option><option value="vendedor">Vendedor</option><option value="almacen">Almacén</option><option value="gerente">Gerente</option><option value="admin">Administrador</option></select></label><label>Contraseña<input id="user-password" class="input" type="password" minlength="8" placeholder="Mínimo 8 caracteres" /></label></div><label class="check-field"><input id="user-active" type="checkbox" checked />Usuario activo</label><div id="user-form-error" class="notice-error" hidden></div></form></section>
@@ -511,6 +561,7 @@
               <p class="eyebrow">Nota de crédito</p>
               <h2>Emitir e-CF 34</h2>
             </div>
+            <select id="credit-status-filter" class="input compact-select"><option value="vigente">Vigentes</option><option value="todas">Todas</option><option value="vencida">Vencidas</option><option value="agotada">Agotadas</option></select>
           </div>
           <div class="credit-note-layout">
             <form id="credit-note-form" class="credit-note-form">
@@ -523,6 +574,7 @@
                 </select>
               </label>
               <label>Motivo<textarea id="credit-reason" class="input" maxlength="90" rows="3" required></textarea></label>
+              <label>Vigencia comercial del saldo<input id="credit-expires-at" class="input" type="date" required /><small class="field-help">Esta fecha controla el uso del saldo en el POS; la secuencia E34 no vence ante DGII.</small></label>
               <button id="issue-credit-note" class="primary-button" type="submit">Emitir E34</button>
             </form>
             <div id="credit-note-list" class="credit-note-list"></div>

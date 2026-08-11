@@ -159,6 +159,8 @@ class POSHandler(BaseHTTPRequestHandler):
                             "name": company.issuer_name,
                             "rnc": company.issuer_rnc,
                             "address": settings.company_address,
+                            "municipality": settings.company_municipality,
+                            "province": settings.company_province,
                             "environment": company.environment,
                             "company_id": company.company_id,
                             "workspace_name": company.workspace_name,
@@ -195,7 +197,27 @@ class POSHandler(BaseHTTPRequestHandler):
             elif path == "/api/credit-notes":
                 query = parse_qs(parsed.query)
                 result = DB.list_credit_notes_page(query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
+                for note in result["items"]:
+                    note["available_amount"] = round(max(0.0, float(note["total"]) - float(note.get("applied_amount") or 0)), 2)
                 self.send_json({"credit_notes": result["items"], "pagination": result})
+            elif path == "/api/credit-notes/available":
+                query = parse_qs(parsed.query)
+                client_id = int(query.get("client_id", ["0"])[0] or 0)
+                code = query.get("code", [""])[0]
+                notes = DB.available_credit_notes(client_id, code)
+                self.send_json({
+                    "credit_notes": notes,
+                    "available_total": round(sum(float(note["available_amount"]) for note in notes), 2),
+                })
+            elif path.startswith("/api/credit-notes/"):
+                note_id = int(path.removeprefix("/api/credit-notes/"))
+                self.send_json({"credit_note": DB.get_credit_note(note_id)})
+            elif path == "/api/cash-register":
+                self.require_sales_user()
+                self.send_json({
+                    "session": DB.cash_session_detail(),
+                    "history": DB.list_cash_sessions(),
+                })
             elif path == "/api/alerts":
                 self.send_json({"alerts": DB.low_stock()})
             elif path == "/api/invoices":
@@ -500,8 +522,11 @@ class POSHandler(BaseHTTPRequestHandler):
                             "email": draft.get("email", ""),
                             "address": draft.get("address", ""),
                         },
-                        "payment_method": draft["payment_method"],
+                        "payment_method": str(payload.get("payment_method") or draft["payment_method"]),
+                        "payments": payload.get("payments") or [],
                         "general_discount": draft.get("general_discount", 0),
+                        "credit_amount": payload.get("credit_amount", 0),
+                        "credit_note_code": payload.get("credit_note_code", ""),
                         "items": [
                             {
                                 "product_id": item["product_id"],
@@ -524,6 +549,7 @@ class POSHandler(BaseHTTPRequestHandler):
                     modification_code=str(payload.get("modification_code", "1")),
                     reason=str(payload.get("reason", "")),
                     fiscal_environment=imecf.company.environment,
+                    expires_at=str(payload.get("expires_at", "")),
                 )
                 warning = ""
                 if imecf.active:
@@ -546,6 +572,28 @@ class POSHandler(BaseHTTPRequestHandler):
                     {"credit_note": DB.get_credit_note(int(note["id"])), "imecf_warning": warning},
                     status=201,
                 )
+            elif path == "/api/cash-register/open":
+                user = self.require_sales_user()
+                session = DB.open_cash_session(
+                    int(user.id), float(payload.get("opening_amount") or 0), str(payload.get("notes") or "")
+                )
+                DB.log_audit(int(user.id), "Abrir caja", "cuadre", session.get("id"), {"opening_amount": session.get("opening_amount")})
+                self.send_json({"session": session}, status=201)
+            elif path == "/api/cash-register/movement":
+                user = self.require_sales_user()
+                session = DB.add_cash_movement(
+                    int(user.id), str(payload.get("movement_type") or ""),
+                    float(payload.get("amount") or 0), str(payload.get("description") or ""),
+                )
+                DB.log_audit(int(user.id), "Movimiento de caja", "cuadre", session.get("id"), {"movement_type": payload.get("movement_type"), "amount": payload.get("amount")})
+                self.send_json({"session": session}, status=201)
+            elif path == "/api/cash-register/close":
+                user = self.require_sales_user()
+                session = DB.close_cash_session(
+                    int(user.id), float(payload.get("counted_cash") or 0), str(payload.get("notes") or "")
+                )
+                DB.log_audit(int(user.id), "Cerrar caja", "cuadre", session.get("id"), {"expected": session.get("expected_cash"), "counted": session.get("counted_cash"), "difference": session.get("difference")})
+                self.send_json({"session": session})
             elif path == "/api/fiscal/companies":
                 user = self.require_fiscal_admin()
                 password = str(payload.pop("current_password", ""))
@@ -688,6 +736,9 @@ class POSHandler(BaseHTTPRequestHandler):
             fiscal_environment=imecf.company.environment,
             general_discount=float(payload.get("general_discount") or 0),
             general_discount_percent=float(payload.get("general_discount_percent") or 0),
+            credit_amount=float(payload.get("credit_amount") or 0),
+            credit_note_code=str(payload.get("credit_note_code") or ""),
+            payments=payload.get("payments") or None,
         )
         xml_text = build_ecf_xml(invoice, imecf.company)
         DB.update_invoice_xml(int(invoice["id"]), xml_text)

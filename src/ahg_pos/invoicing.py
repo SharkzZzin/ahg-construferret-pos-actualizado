@@ -94,21 +94,43 @@ def invoice_public_model(invoice: dict[str, Any]) -> dict[str, Any]:
             provider_response = json.loads(raw_response)
         except (TypeError, json.JSONDecodeError):
             provider_response = {}
-    provider_code = find_nested_value(provider_response, ("codigoSeguridad", "securityCode"))
-    provider_dgii_url = find_nested_value(provider_response, ("dgiiUrl", "dgii_url", "urlConsultaQR"))
+    provider_code = find_nested_value(
+        provider_response,
+        ("codigoSeguridad", "CodigoSeguridad", "securityCode", "security_code"),
+    )
+    provider_dgii_url = find_nested_value(
+        provider_response,
+        ("dgiiUrl", "dgii_url", "urlConsultaQR", "UrlConsultaQR", "urlTimbre", "UrlTimbre"),
+    )
     provider_xml_url = find_nested_value(provider_response, ("xmlUrl", "xml_url"))
-    provider_signed_at = find_nested_value(provider_response, ("FechaHoraFirma", "fechaHoraFirma", "signedAt"))
+    provider_signed_at = find_nested_value(
+        provider_response,
+        ("FechaHoraFirma", "fechaHoraFirma", "FechaFirma", "fechaFirma", "signedAt", "signed_at"),
+    )
     provider_issuer_name = find_nested_value(provider_response, ("RazonSocialEmisor", "razonSocialEmisor"))
     provider_commercial_name = find_nested_value(provider_response, ("NombreComercial", "nombreComercial"))
     provider_issuer_rnc = find_nested_value(provider_response, ("RNCEmisor", "rncEmisor"))
     provider_issuer_address = find_nested_value(provider_response, ("DireccionEmisor", "direccionEmisor"))
-    code = provider_code or make_security_code(invoice["en_ncf"], float(invoice["total"]), invoice["issued_at"])
+    provider_municipality = find_nested_value(provider_response, ("Municipio", "municipio", "MunicipioEmisor"))
+    provider_province = find_nested_value(provider_response, ("Provincia", "provincia", "ProvinciaEmisor"))
+    provider_expiry = find_nested_value(
+        provider_response,
+        ("FechaVencimientoSecuencia", "fechaVencimientoSecuencia", "FechaVencimiento", "fechaVencimiento"),
+    )
     dgii_url = trusted_dgii_url(provider_dgii_url)
+    total = float(invoice.get("total") or 0)
+    credit_applied = float(invoice.get("credit_applied") or 0)
     return {
         **invoice,
+        "amount_due": round(max(0.0, total - credit_applied), 2),
         "display_encf": invoice.get("provider_encf") or invoice["en_ncf"],
         "ecf_label": ECF_TYPES.get(invoice["ecf_type"], invoice["ecf_type"]),
-        "security_code": code,
+        # Never present a locally generated hash as a DGII security code. The
+        # official value must come from the signed provider response.
+        "security_code": str(provider_code or ""),
+        "academic_reference_code": make_security_code(
+            invoice["en_ncf"], float(invoice["total"]), invoice["issued_at"]
+        ),
         "dgii_url": dgii_url,
         "dgii_qr_available": bool(dgii_url),
         "xml_url": provider_xml_url or "",
@@ -117,6 +139,9 @@ def invoice_public_model(invoice: dict[str, Any]) -> dict[str, Any]:
         "provider_commercial_name": provider_commercial_name or "",
         "provider_issuer_rnc": provider_issuer_rnc or "",
         "provider_issuer_address": provider_issuer_address or "",
+        "provider_issuer_municipality": provider_municipality or "",
+        "provider_issuer_province": provider_province or "",
+        "sequence_expires_at": provider_expiry or invoice.get("sequence_expires_at") or "",
         "fiscal_warning": fiscal_warning(invoice["ecf_type"], float(invoice["total"])),
     }
 
@@ -130,7 +155,8 @@ def trusted_dgii_url(value: Any) -> str:
     hostname = (parsed.hostname or "").lower()
     if parsed.scheme != "https" or not (hostname == "dgii.gov.do" or hostname.endswith(".dgii.gov.do")):
         return ""
-    if settings.academic_mode and "/testecf/" not in parsed.path.lower():
+    is_test_endpoint = hostname.startswith("testecf.") or "/testecf/" in parsed.path.lower()
+    if settings.academic_mode and not is_test_endpoint:
         return ""
     return text
 

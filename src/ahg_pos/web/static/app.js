@@ -6,6 +6,7 @@ const state = {
   preinvoices: [],
   invoices: [],
   creditNotes: [],
+  imecfDiagnostics: {},
   currentPreinvoiceId: null,
   cart: [],
   ecfType: "32",
@@ -20,6 +21,10 @@ const state = {
   paypal: null,
   paypalPayment: null,
   paypalSdkPromise: null,
+  availableCredit: 0,
+  availableCreditNotes: [],
+  cashSession: null,
+  cashHistory: [],
   fiscalIssuer: {},
   productPagination: null,
   masterProductPagination: null,
@@ -54,6 +59,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindInventory();
   bindFiscal();
   bindReports();
+  bindCash();
   bindAudit();
   bindAdmin();
   bindDialog();
@@ -94,13 +100,13 @@ function renderFiscalMode(health) {
     status.textContent = "IMECF Test conectado";
     status.className = "status-pill";
     title.textContent = "Simulación e-CF conectada";
-    copy.textContent = "El comprobante académico se enviará únicamente al ambiente de prueba.";
+    copy.textContent = "El comprobante se enviará únicamente al ambiente TESTeCF y no tendrá validez fiscal.";
     return;
   }
   status.textContent = health.imecf_configured ? "IMECF desactivado" : "IMECF sin configurar";
   status.className = "status-pill warning";
-  title.textContent = "Simulación fiscal académica";
-  copy.textContent = "El comprobante demostrativo se guardará sin validez ante la DGII.";
+  title.textContent = "Emisión e-CF en TESTeCF";
+  copy.textContent = "El comprobante se guardará sin validez fiscal en el ambiente de prueba.";
 }
 
 function bindTabs() {
@@ -127,6 +133,7 @@ function setView(view) {
   if (view === "suppliers") refreshSuppliers();
   if (view === "preinvoices") refreshPreinvoices();
   if (view === "audit") refreshAudit();
+  if (view === "cash") refreshCash();
   if (view === "admin") refreshAdmin();
 }
 
@@ -796,6 +803,7 @@ function bindSale() {
     state.currentPreinvoiceId = null;
     $("#sale-notes").value = "";
     $("#general-discount").value = "0";
+    resetCreditRedemption();
     renderCart();
   });
   $$(".segment").forEach((button) => {
@@ -813,18 +821,46 @@ function bindSale() {
   });
   $("#lookup-client").addEventListener("click", lookupClient);
   $("#client-select").addEventListener("change", selectRegisteredClient);
+  $("#check-credit").addEventListener("click", () => refreshCreditAvailability(true));
+  $("#credit-note-code").addEventListener("input", (event) => {
+    event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 13);
+    state.availableCredit = 0;
+    state.availableCreditNotes = [];
+    $("#credit-amount").value = "0";
+    renderCreditAvailability();
+    renderTotals();
+  });
+  $("#credit-amount").addEventListener("input", () => {
+    state.paypalPayment = null;
+    renderTotals();
+  });
   bindPartyInputs("client");
   $("#payment-method").addEventListener("change", () => {
     state.paypalPayment = null;
+    renderSplitPayment();
     renderOnlinePaymentStatus();
   });
+  $("#split-payment-enabled").addEventListener("change", () => {
+    state.paypalPayment = null;
+    renderSplitPayment(true);
+  });
+  $("#primary-payment-amount").addEventListener("input", () => {
+    state.paypalPayment = null;
+    renderSplitPayment();
+  });
+  $("#secondary-payment-method").addEventListener("change", () => {
+    state.paypalPayment = null;
+    renderSplitPayment();
+  });
   $("#open-payment-gateway").addEventListener("click", () => {
-    const total = cartTotals().total;
+    let online = null;
+    try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (exception) { toast(exception.message, true); return; }
+    const total = Number(online?.amount || 0);
     if (total <= 0) {
       toast("Agrega artículos con un total mayor que cero para cobrar.", true);
       return;
     }
-    openPaymentGateway($("#payment-method").value, total);
+    openPaymentGateway(online.payment_method, total);
   });
   $("#close-payment-dialog").addEventListener("click", () => $("#payment-dialog").close());
   $("#paypal-simulate-pay")?.addEventListener("click", () => confirmSimulatedPayment("paypal"));
@@ -847,7 +883,128 @@ function selectRegisteredClient() {
   $("#client-phone").value = formatPhone(client?.phone || "");
   $("#client-email").value = client?.email || "";
   $("#client-address").value = client?.address || "";
+  $("#credit-amount").value = "0";
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
   renderBuyerRequirement();
+  refreshCreditAvailability();
+}
+
+function paymentRowsFromForm() {
+  const total = salePayableTotal();
+  const primaryMethod = $("#payment-method").value;
+  if (primaryMethod === "credito") return [];
+  if (!$("#split-payment-enabled").checked) {
+    return total > 0 ? [{ payment_method: primaryMethod, amount: Math.round(total * 100) / 100 }] : [];
+  }
+  const primaryAmount = Math.round(Number($("#primary-payment-amount").value || 0) * 100) / 100;
+  const secondaryMethod = $("#secondary-payment-method").value;
+  const secondaryAmount = Math.round((total - primaryAmount) * 100) / 100;
+  if (primaryMethod === secondaryMethod) throw new Error("Selecciona dos formas de pago diferentes.");
+  if (primaryAmount <= 0 || secondaryAmount <= 0) throw new Error("Cada forma de pago debe tener un monto mayor que cero.");
+  return [
+    { payment_method: primaryMethod, amount: primaryAmount },
+    { payment_method: secondaryMethod, amount: secondaryAmount },
+  ];
+}
+
+function renderSplitPayment(resetAmount = false) {
+  const enabled = Boolean($("#split-payment-enabled")?.checked);
+  const panel = $("#split-payment-panel");
+  if (!panel) return;
+  panel.hidden = !enabled;
+  $("#split-payment-enabled").disabled = $("#payment-method").value === "credito";
+  if ($("#payment-method").value === "credito" && enabled) {
+    $("#split-payment-enabled").checked = false;
+    panel.hidden = true;
+    return;
+  }
+  if (!enabled) return;
+  const total = salePayableTotal();
+  if (resetAmount || !Number($("#primary-payment-amount").value)) {
+    $("#primary-payment-amount").value = (Math.round(total * 50) / 100).toFixed(2);
+  }
+  const primary = Math.max(0, Math.min(total, Number($("#primary-payment-amount").value || 0)));
+  const remaining = Math.max(0, Math.round((total - primary) * 100) / 100);
+  $("#secondary-payment-amount").value = remaining.toFixed(2);
+  $("#split-payment-summary").textContent = `${paymentLabelFor($("#payment-method").value)} ${money.format(primary)} + ${paymentLabelFor($("#secondary-payment-method").value)} ${money.format(remaining)} = ${money.format(total)}`;
+  renderOnlinePaymentStatus();
+}
+
+function requestedCreditAmount() {
+  const amount = Number($("#credit-amount")?.value || 0);
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0;
+}
+
+function effectiveCreditAmount() {
+  return Math.min(requestedCreditAmount(), Number(state.availableCredit || 0), cartTotals().total);
+}
+
+function salePayableTotal() {
+  return Math.max(0, Math.round((cartTotals().total - effectiveCreditAmount()) * 100) / 100);
+}
+
+function resetCreditRedemption() {
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  if ($("#credit-note-code")) $("#credit-note-code").value = "";
+  if ($("#credit-amount")) $("#credit-amount").value = "0";
+  renderCreditAvailability();
+}
+
+function renderCreditAvailability() {
+  const box = $("#credit-availability");
+  const list = $("#available-credit-list");
+  if (!box) return;
+  const clientId = Number($("#client-select")?.value || 0);
+  const code = $("#credit-note-code")?.value.trim() || "";
+  box.className = `credit-availability ${state.availableCredit > 0 ? "available" : ""}`;
+  if (!clientId) {
+    box.textContent = "Selecciona un cliente registrado para consultar o canjear una nota de crédito.";
+  } else if (state.availableCredit > 0) {
+    const source = code ? `Vale ${code}` : `${state.availableCreditNotes.length} nota(s) aceptada(s)`;
+    box.textContent = `${source} · Saldo disponible: ${money.format(state.availableCredit)}.`;
+  } else {
+    box.textContent = code ? `El vale ${code} no existe, no está aceptado o ya fue consumido.` : "Este cliente no tiene notas de crédito disponibles.";
+  }
+  if (list) {
+    list.innerHTML = state.availableCreditNotes.map((note) => `
+      <button class="available-credit-item" type="button" data-select-credit="${escapeHtml(note.display_encf)}">
+        <strong>${escapeHtml(note.display_encf)}</strong>
+        <span>${money.format(note.available_amount)} · vence ${escapeHtml(formatReceiptDate(note.expires_at))}</span>
+      </button>
+    `).join("");
+    list.querySelectorAll("[data-select-credit]").forEach((button) => button.addEventListener("click", () => {
+      const note = state.availableCreditNotes.find((item) => item.display_encf === button.dataset.selectCredit);
+      if (!note) return;
+      $("#credit-note-code").value = note.display_encf;
+      $("#credit-amount").value = Math.min(Number(note.available_amount), cartTotals().total).toFixed(2);
+      state.availableCredit = Number(note.available_amount);
+      state.availableCreditNotes = [note];
+      renderCreditAvailability();
+      renderTotals();
+    }));
+  }
+}
+
+async function refreshCreditAvailability(showMessage = false) {
+  const clientId = Number($("#client-select")?.value || 0);
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  if (!clientId) {
+    renderCreditAvailability();
+    if (showMessage) toast("Selecciona un cliente registrado antes de aplicar el crédito.", true);
+    return;
+  }
+  const code = $("#credit-note-code").value.trim().toUpperCase();
+  const result = await api(`/api/credit-notes/available?client_id=${clientId}&code=${encodeURIComponent(code)}`);
+  state.availableCredit = Number(result.available_total || 0);
+  state.availableCreditNotes = result.credit_notes || [];
+  renderCreditAvailability();
+  renderTotals();
+  if (showMessage) {
+    toast(state.availableCredit > 0 ? `Crédito disponible: ${money.format(state.availableCredit)}.` : "No hay crédito disponible para aplicar.", state.availableCredit <= 0);
+  }
 }
 
 function selectedClientPayload() {
@@ -1094,6 +1251,8 @@ function bindFiscal() {
   $("#fiscal-sync-documents").addEventListener("click", syncFiscalDocuments);
   $("#fiscal-search").addEventListener("input", renderFiscalDocuments);
   $("#credit-note-form").addEventListener("submit", issueCreditNote);
+  $("#credit-status-filter").addEventListener("change", renderCreditNotes);
+  if (!$("#credit-expires-at").value) $("#credit-expires-at").value = defaultCreditExpiry();
   $("#fiscal-config-form").addEventListener("submit", saveFiscalCompany);
   $("#cancel-fiscal-config").addEventListener("click", resetFiscalCompanyForm);
   $$(".filter-button").forEach((button) => {
@@ -1280,13 +1439,85 @@ async function refreshFiscal() {
 function renderCreditNotes() {
   const eligible = state.invoices.filter((invoice) => invoice.provider_encf && !state.creditNotes.some((note) => Number(note.source_invoice_id) === Number(invoice.id) && !normalize(note.api_status).includes("rechaz")));
   $("#credit-source-invoice").innerHTML = `<option value="">Selecciona una factura aceptada</option>${eligible.map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.provider_encf)} · ${escapeHtml(invoice.client_name)} · ${money.format(invoice.total)}</option>`).join("")}`;
-  $("#credit-note-list").innerHTML = state.creditNotes.map((note) => `
+  const filter = $("#credit-status-filter")?.value || "vigente";
+  const notes = state.creditNotes.filter((note) => filter === "todas" || note.credit_status === filter);
+  $("#credit-note-list").innerHTML = notes.map((note) => `
     <article class="credit-note-card">
-      <div class="document-title"><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span class="badge ${normalize(note.api_status).includes("acept") ? "ok" : note.api_error ? "low" : "warning"}">${escapeHtml(note.api_status || note.status)}</span></div>
+      <div class="document-title"><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span class="badge ${note.credit_status === "vigente" ? "ok" : note.credit_status === "rechazada" || note.credit_status === "vencida" ? "low" : "warning"}">${escapeHtml(note.credit_status || note.api_status || note.status)}</span></div>
       <p>Modifica ${escapeHtml(note.source_encf)} · ${money.format(note.total)}</p>
+      <p>Cliente: ${escapeHtml(note.source_client_name || "Consumidor Final")} · Saldo: ${money.format(note.available_amount || 0)}</p>
+      <p>Vigencia comercial hasta ${escapeHtml(formatReceiptDate(note.expires_at))}</p>
       <span>${escapeHtml(note.reason)}</span>
+      <div class="credit-card-actions"><button class="table-button" type="button" data-credit-voucher="${note.id}">Comprobante</button>${note.credit_status === "vigente" ? `<button class="table-button" type="button" data-use-credit="${note.id}">Usar en venta</button>` : ""}</div>
     </article>
-  `).join("") || `<div class="empty-state">Todavía no hay notas de crédito E34.</div>`;
+  `).join("") || `<div class="empty-state">No hay notas de crédito para este filtro.</div>`;
+  $("#credit-note-list").querySelectorAll("[data-credit-voucher]").forEach((button) => button.addEventListener("click", () => openCreditVoucher(Number(button.dataset.creditVoucher))));
+  $("#credit-note-list").querySelectorAll("[data-use-credit]").forEach((button) => button.addEventListener("click", () => {
+    const note = state.creditNotes.find((item) => Number(item.id) === Number(button.dataset.useCredit));
+    const client = state.clients.find((item) => normalize(item.name) === normalize(note?.source_client_name));
+    setView("sale");
+    if (client) { $("#client-select").value = client.id; selectRegisteredClient(); }
+    $("#credit-note-code").value = note?.provider_encf || note?.en_ncf || "";
+    $("#credit-amount").value = Number(note?.available_amount || 0).toFixed(2);
+    refreshCreditAvailability();
+  }));
+}
+
+function bindCash() {
+  $("#refresh-cash")?.addEventListener("click", refreshCash);
+  $("#cash-open-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await api("/api/cash-register/open", { method: "POST", body: JSON.stringify({ opening_amount: Number($("#cash-opening-amount").value || 0), notes: $("#cash-opening-notes").value.trim() }) });
+    $("#cash-open-form").reset();
+    toast("Caja abierta correctamente.");
+    await refreshCash();
+  });
+  $("#cash-movement-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await api("/api/cash-register/movement", { method: "POST", body: JSON.stringify({ movement_type: $("#cash-movement-type").value, amount: Number($("#cash-movement-amount").value || 0), description: $("#cash-movement-description").value.trim() }) });
+    $("#cash-movement-form").reset();
+    toast("Movimiento de caja registrado.");
+    await refreshCash();
+  });
+  $("#cash-close-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const result = await api("/api/cash-register/close", { method: "POST", body: JSON.stringify({ counted_cash: Number($("#cash-counted-amount").value || 0), notes: $("#cash-closing-notes").value.trim() }) });
+    const difference = Number(result.session?.difference || 0);
+    toast(`Caja cerrada. Diferencia: ${money.format(difference)}.`, Math.abs(difference) > 0.01);
+    $("#cash-close-form").reset();
+    await refreshCash();
+  });
+}
+
+async function refreshCash() {
+  if (!$("#cash-session-summary")) return;
+  const payload = await api("/api/cash-register");
+  state.cashSession = payload.session || { status: "sin_apertura" };
+  state.cashHistory = payload.history || [];
+  renderCash();
+}
+
+function renderCash() {
+  const session = state.cashSession || { status: "sin_apertura" };
+  const open = session.status === "abierta";
+  $("#cash-open-form").hidden = open;
+  $("#cash-close-form").hidden = !open;
+  $("#cash-movement-form").querySelectorAll("input, select, button").forEach((element) => { element.disabled = !open; });
+  $("#cash-action-title").textContent = open ? `Caja #${session.id} abierta` : "Abrir caja";
+  const metrics = open || session.status === "cerrada" ? [
+    ["Estado", open ? "Abierta" : "Cerrada"],
+    ["Fondo inicial", money.format(session.opening_amount || 0)],
+    ["Ventas en efectivo", money.format(session.cash_sales || 0)],
+    ["Efectivo esperado", money.format(session.expected_cash || 0)],
+    ["Comprobantes", session.invoice_count || 0],
+  ] : [["Estado", "Sin apertura"], ["Fondo inicial", money.format(0)], ["Ventas en efectivo", money.format(0)], ["Efectivo esperado", money.format(0)], ["Comprobantes", 0]];
+  $("#cash-session-summary").innerHTML = metrics.map(([label, value]) => `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
+  $("#cash-payment-breakdown").innerHTML = (session.payments || []).map((row) => `<article><strong>${escapeHtml(paymentLabelFor(row.payment_method))}</strong><span>${money.format(row.amount)}</span></article>`).join("") || `<div class="empty-state">Este turno todavía no tiene pagos registrados.</div>`;
+  $("#cash-movement-list").innerHTML = (session.movements || []).map((row) => `<article><strong>${row.movement_type === "entrada" ? "+" : "-"}${money.format(row.amount)} · ${escapeHtml(row.description)}</strong><span>${escapeHtml(row.user_name)} · ${escapeHtml(formatReceiptDateTime(row.created_at))}</span></article>`).join("") || `<div class="empty-state">Sin entradas o salidas manuales.</div>`;
+  $("#cash-history").innerHTML = state.cashHistory.map((row) => {
+    const difference = Number(row.difference || 0);
+    return `<article><strong>Caja #${row.id} · ${escapeHtml(row.status)}</strong><span>${escapeHtml(formatReceiptDateTime(row.opened_at))}${row.closed_at ? ` → ${escapeHtml(formatReceiptDateTime(row.closed_at))}` : ""}</span><span>Esperado ${money.format(row.expected_cash || 0)} · Contado ${row.counted_cash == null ? "Pendiente" : money.format(row.counted_cash)} · <b class="${difference < 0 ? "cash-difference-negative" : "cash-difference-positive"}">Diferencia ${money.format(difference)}</b></span></article>`;
+  }).join("") || `<div class="empty-state">Todavía no hay turnos de caja.</div>`;
 }
 
 async function issueCreditNote(event) {
@@ -1305,10 +1536,12 @@ async function issueCreditNote(event) {
         source_invoice_id: sourceInvoiceId,
         modification_code: $("#credit-modification-code").value,
         reason: $("#credit-reason").value.trim(),
+        expires_at: $("#credit-expires-at").value,
       }),
     });
     toast(result.imecf_warning || `E34 ${result.credit_note.provider_encf || result.credit_note.en_ncf} procesado.`, Boolean(result.imecf_warning));
     $("#credit-note-form").reset();
+    $("#credit-expires-at").value = defaultCreditExpiry();
     await refreshFiscal();
   } finally {
     button.disabled = false;
@@ -1385,7 +1618,8 @@ function renderFiscalDocuments() {
     || `<div class="empty-state">No hay documentos que coincidan con el filtro.</div>`;
   $("#fiscal-documents").querySelectorAll("[data-fiscal-action]").forEach((button) => {
     button.addEventListener("click", () => {
-      if (button.dataset.providerId) runRemoteFiscalAction(button);
+      if (button.dataset.fiscalAction === "detail") runRemoteFiscalLookup(button);
+      else if (button.dataset.providerId) runRemoteFiscalAction(button);
       else runFiscalAction(button);
     });
   });
@@ -1416,6 +1650,7 @@ function fiscalDocumentCard(invoice) {
   const status = invoice.api_error ? "Error IMECF" : invoice.api_status || "Documento local";
   const tone = invoice.api_error ? "low" : invoice.api_status ? "ok" : "";
   const providerActionId = invoice._remote || invoice._creditNote ? invoice.provider_document_id : "";
+  const liveDiagnostic = providerActionId ? state.imecfDiagnostics[providerActionId] || "" : "";
   const xmlHref = providerActionId ? `/api/imecf/documents/${providerActionId}/xml` : `/api/invoices/${invoice.id}/xml`;
   return `
     <article class="fiscal-document">
@@ -1436,11 +1671,13 @@ function fiscalDocumentCard(invoice) {
         ${invoice.reason ? `<p class="document-track">Motivo: ${escapeHtml(invoice.reason)}</p>` : ""}
         ${invoice.track_id ? `<p class="document-track">TrackId: ${escapeHtml(invoice.track_id)}</p>` : ""}
         ${invoice.api_error ? `<p class="notice-error">${escapeHtml(invoice.api_error)}</p>` : ""}
+        ${liveDiagnostic ? `<p class="notice-error">Detalle IMECF: ${escapeHtml(liveDiagnostic)}</p>` : ""}
       </div>
       <div class="document-actions">
         <a class="table-button" href="${xmlHref}" target="_blank" rel="noreferrer">XML</a>
         ${invoice.provider_document_id ? `
           <button class="table-button" data-fiscal-action="status" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Consultar estado</button>
+          <button class="table-button" data-fiscal-action="detail" data-provider-id="${providerActionId}" data-encf="${escapeHtml(encf)}">Ver detalle</button>
           ${invoice.dgii_url
             ? `<a class="table-button" href="${escapeHtml(invoice.dgii_url)}" target="_blank" rel="noreferrer">DGII TesteCF</a>`
             : invoice.track_id
@@ -1499,12 +1736,84 @@ async function runRemoteFiscalAction(button) {
   button.textContent = "...";
   try {
     const result = await api(`/api/imecf/documents/${providerId}/${action}`);
-    toast(`IMECF: ${result.estado || result.status || "consulta completada"}`);
+    const status = result.estado || result.status || "consulta completada";
+    const diagnostic = imecfDiagnostic(result);
+    const rejected = normalize(status).includes("rechaz") || Boolean(diagnostic);
+    const summary = `${status}${diagnostic ? ` · ${diagnostic}` : ""}`;
+    state.imecfDiagnostics[providerId] = summary;
+    toast(`IMECF: ${summary}`, rejected);
     await syncFiscalDocuments();
+    renderFiscalDocuments();
   } finally {
     button.disabled = false;
     button.textContent = label;
   }
+}
+
+function defaultCreditExpiry() {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 90);
+  return expiry.toISOString().slice(0, 10);
+}
+
+async function openCreditVoucher(noteId) {
+  const payload = await api(`/api/credit-notes/${noteId}`);
+  const note = payload.credit_note;
+  const encf = note.provider_encf || note.en_ncf;
+  $("#dialog-eyebrow").textContent = "Comprobante de nota de crédito";
+  $("#dialog-ncf").textContent = encf;
+  $("#xml-link").hidden = !note.provider_document_id;
+  if (note.provider_document_id) $("#xml-link").href = `/api/imecf/documents/${encodeURIComponent(note.provider_document_id)}/xml`;
+  $("#issue-dialog-preinvoice").hidden = true;
+  $("#invoice-preview").innerHTML = `
+    <section class="aux-receipt credit-voucher">
+      <header class="aux-fiscal-header"><div class="aux-issuer-card"><img class="aux-company-logo" src="/static/logo-ahg.png" alt="AHG Construferret" /><div><h3>AHG CONSTRUFERRET</h3><strong>${escapeHtml(state.fiscalIssuer.name || "")}</strong><br /><strong>RNC:</strong> ${escapeHtml(formatFiscalId(state.fiscalIssuer.rnc || ""))}<br /><strong>Fecha de emisión:</strong> ${escapeHtml(formatReceiptDate(note.issued_at))}</div></div><div class="aux-document-card"><h4>Nota de Crédito Electrónica</h4><strong>e-NCF:</strong> ${escapeHtml(encf)}<br /><strong>Estado:</strong> ${escapeHtml(note.api_status || note.status)}</div></header>
+      <section class="aux-buyer-card"><strong>Cliente:</strong> ${escapeHtml(note.client_name || "Consumidor Final")}<br /><strong>RNC/Cédula:</strong> ${escapeHtml(formatFiscalId(note.rnc_cedula || "")) || "No identificado"}</section>
+      <div class="credit-voucher-meta"><div><span>Comprobante afectado</span><strong>${escapeHtml(note.source_encf)}</strong></div><div><span>Motivo</span><strong>${escapeHtml(note.reason)}</strong></div><div><span>Monto original del crédito</span><strong>${money.format(note.total)}</strong></div><div><span>Saldo disponible</span><strong>${money.format(note.available_amount)}</strong></div><div><span>Vigencia comercial</span><strong>${escapeHtml(formatReceiptDate(note.expires_at))}</strong></div><div><span>Aplicado</span><strong>${money.format(note.applied_amount || 0)}</strong></div></div>
+      <p class="section-copy">La vigencia mostrada controla el canje del saldo en este POS. La secuencia fiscal E34 no lleva fecha de vencimiento ante la DGII.</p>
+      <footer class="aux-fiscal-footer">Sin validez fiscal.</footer>
+    </section>`;
+  const dialog = $("#invoice-dialog");
+  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "open");
+}
+
+async function runRemoteFiscalLookup(button) {
+  const providerId = button.dataset.providerId;
+  const encf = button.dataset.encf;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "...";
+  try {
+    const result = await api(`/api/imecf/by-encf/${encodeURIComponent(encf)}`);
+    const status = result.estado || result.status || "detalle consultado";
+    const diagnostic = imecfDiagnostic(result);
+    const summary = `${status}${diagnostic ? ` · ${diagnostic}` : ""}`;
+    state.imecfDiagnostics[providerId] = summary;
+    toast(`IMECF: ${summary}`, normalize(status).includes("rechaz"));
+    renderFiscalDocuments();
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+function imecfDiagnostic(result) {
+  const messages = [];
+  const diagnosticKey = /(error|mensaje|message|detail|detalle|motivo|razon|rechaz|validacion|validation|descripcion)/i;
+  function visit(value, key = "", depth = 0) {
+    if (depth > 6 || value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key, depth + 1));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+      return;
+    }
+    if (diagnosticKey.test(key) && String(value).trim()) messages.push(String(value).trim());
+  }
+  visit(result);
+  return [...new Set(messages)].join(" · ").slice(0, 600);
 }
 
 async function testImecfConnection() {
@@ -1740,8 +2049,14 @@ function renderTotals() {
   $("#discount-total").textContent = money.format(totals.discountTotal);
   $("#tax").textContent = money.format(totals.tax);
   $("#total").textContent = money.format(totals.total);
+  const credit = effectiveCreditAmount();
+  $("#credit-applied").textContent = `-${money.format(credit)}`;
+  $("#credit-applied-row").hidden = credit <= 0;
+  $("#amount-due").textContent = money.format(Math.max(0, totals.total - credit));
+  $("#amount-due-row").hidden = credit <= 0;
   renderBuyerRequirement();
-  renderOnlinePaymentStatus();
+  renderSplitPayment();
+  if (!$("#split-payment-enabled")?.checked) renderOnlinePaymentStatus();
 }
 
 async function issueInvoice() {
@@ -1761,10 +2076,44 @@ async function issueInvoice() {
     return;
   }
   const paymentMethod = $("#payment-method").value;
-  if (["tarjeta", "paypal"].includes(paymentMethod)) {
+  const requestedCredit = requestedCreditAmount();
+  if (requestedCredit > 0) {
+    if (!client.id) {
+      toast("Selecciona un cliente registrado para aplicar la nota de crédito.", true);
+      return;
+    }
+    await refreshCreditAvailability();
+    if (requestedCredit > Number(state.availableCredit || 0) + 0.001) {
+      toast(`Crédito insuficiente. Disponible: ${money.format(state.availableCredit)}.`, true);
+      return;
+    }
+    if (requestedCredit > total + 0.001) {
+      toast("El crédito no puede superar el total de la venta.", true);
+      return;
+    }
+    if (paymentMethod === "credito") {
+      toast("Selecciona una forma de pago inmediata para el monto restante.", true);
+      return;
+    }
+  }
+  const payableTotal = Math.max(0, Math.round((total - requestedCredit) * 100) / 100);
+  let payments = [];
+  try {
+    payments = paymentRowsFromForm();
+  } catch (exception) {
+    toast(exception.message, true);
+    return;
+  }
+  const onlineRows = payments.filter((row) => ["tarjeta", "paypal"].includes(row.payment_method));
+  if (onlineRows.length > 1) {
+    toast("Usa solo una forma electrónica por venta mixta.", true);
+    return;
+  }
+  if (onlineRows.length === 1) {
+    const onlinePayment = onlineRows[0];
     const paidTotal = Number(state.paypalPayment?.amount_dop || 0);
-    if (state.paypalPayment?.method !== paymentMethod || Math.abs(paidTotal - total) > 0.01) {
-      await openPaymentGateway(paymentMethod, total);
+    if (onlinePayment.amount > 0 && (state.paypalPayment?.method !== onlinePayment.payment_method || Math.abs(paidTotal - onlinePayment.amount) > 0.01)) {
+      await openPaymentGateway(onlinePayment.payment_method, onlinePayment.amount);
       return;
     }
   }
@@ -1772,7 +2121,10 @@ async function issueInvoice() {
     ecf_type: state.ecfType,
     client,
     payment_method: paymentMethod,
+    payments,
     general_discount_percent: cartTotals().generalDiscountPercent,
+    credit_amount: requestedCredit,
+    credit_note_code: $("#credit-note-code").value.trim().toUpperCase(),
     items: state.cart.map((item) => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_percent: Number(item.discount_percent || 0) })),
   };
   const button = $("#issue-invoice");
@@ -1801,8 +2153,11 @@ async function issueInvoice() {
 function renderOnlinePaymentStatus() {
   const box = $("#online-payment-status");
   const button = $("#open-payment-gateway");
-  const method = $("#payment-method").value;
-  if (!["tarjeta", "paypal"].includes(method)) {
+  let online = null;
+  try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (_) { online = null; }
+  const method = online?.payment_method || "";
+  const payableTotal = Number(online?.amount || 0);
+  if (!online || payableTotal <= 0) {
     box.hidden = true;
     button.hidden = true;
     return;
@@ -1948,11 +2303,16 @@ async function finishIssuedInvoice(result) {
   state.paypalPayment = null;
   $("#sale-notes").value = "";
   $("#general-discount").value = "0";
+  $("#split-payment-enabled").checked = false;
+  $("#primary-payment-amount").value = "";
+  renderSplitPayment();
+  resetCreditRedemption();
   renderCart();
   renderOnlinePaymentStatus();
   await refreshProducts();
   await refreshPreinvoices();
   await refreshReports();
+  await refreshClients();
   await refreshFiscal();
   showInvoice(result.invoice, result.imecf_warning);
 }
@@ -2244,72 +2604,67 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
   const issuer = state.fiscalIssuer || {};
   const encf = invoice.display_encf || invoice.en_ncf || "";
   const issueDate = formatReceiptDate(invoice.issued_at);
-  const signatureDate = formatReceiptDateTime(invoice.signed_at || invoice.issued_at);
+  const signatureDate = invoice.signed_at ? formatReceiptDateTime(invoice.signed_at) : "Pendiente";
   const items = invoice.items || [];
-  const paymentLabel = paymentLabelFor(invoice.payment_method);
-  const trackingUrl = invoice.tracking_token
-    ? `${window.location.origin}/api/public/tracking/${encodeURIComponent(invoice.tracking_token)}`
-    : "";
-  const statusLine = invoice.provider_document_id
-    ? `Aceptado por IMECF/DGII en ambiente de prueba${invoice.api_status ? `: ${invoice.api_status}` : ""}`
-    : "Comprobante local pendiente de IMECF";
+  const basePaymentLabel = paymentLabelFor(invoice.payment_method);
+  const creditApplied = Number(invoice.credit_applied || 0);
+  const paymentRows = invoice.payments || [];
+  const paymentLabel = paymentRows.length
+    ? paymentRows.map((row) => `${paymentLabelFor(row.payment_method)} ${money.format(row.amount)}`).join(" + ")
+    : creditApplied > 0
+    ? `${creditApplied >= Number(invoice.total || 0) ? "Nota de crédito" : `Nota de crédito + ${basePaymentLabel}`}`
+    : basePaymentLabel;
   const qrHref = invoice.dgii_url || "";
-  const sequenceExpiry = invoice.sequence_expires_at ? formatReceiptDate(invoice.sequence_expires_at) : "No indicada";
+  const sequenceExpiry = invoice.sequence_expires_at ? formatReceiptDate(invoice.sequence_expires_at) : "Pendiente";
   const fiscalIssuerName = invoice.provider_issuer_name || issuer.name || "UTESA";
   const fiscalIssuerRnc = invoice.provider_issuer_rnc || issuer.rnc || "";
   const fiscalIssuerAddress = invoice.provider_issuer_address || issuer.address || "";
+  const fiscalMunicipality = invoice.provider_issuer_municipality || issuer.municipality || "No disponible";
+  const fiscalProvince = invoice.provider_issuer_province || issuer.province || "No disponible";
+  const showBuyer = invoice.ecf_type === "31" || Number(invoice.total || 0) >= 250000 || Boolean(invoice.rnc_cedula);
+  const showExpiry = invoice.ecf_type === "31";
   return `
     <section class="aux-receipt">
-      <div class="academic-document-stamp">SIMULACI&Oacute;N ACAD&Eacute;MICA &middot; TESTeCF &middot; SIN VALIDEZ FISCAL</div>
-
       <header class="aux-fiscal-header">
         <div class="aux-issuer-card">
           <img class="aux-company-logo" src="/static/logo-ahg.png" alt="AHG Construferret" />
           <div>
-            <h3>${escapeHtml(fiscalIssuerName)}</h3>
-            <strong>RNC:</strong> ${escapeHtml(formatFiscalId(fiscalIssuerRnc))}<br />
-            <strong>Nombre comercial:</strong> AHG CONSTRUFERRET<br />
-            <strong>Punto de emisi&oacute;n:</strong> ${escapeHtml(issuer.workspace_name || "UTESA")}<br />
-            <strong>Direcci&oacute;n:</strong> ${escapeHtml(fiscalIssuerAddress)}<br />
-            <strong>Fecha de emisi&oacute;n:</strong> ${escapeHtml(issueDate)}
+            <h3>AHG CONSTRUFERRET</h3>
+            <strong>${escapeHtml(fiscalIssuerName)}</strong><br />
+            <strong>Punto de emisi&oacute;n:</strong> ${escapeHtml(issuer.workspace_name || "Sucursal principal")}<br />
+            <strong>RNC:</strong> ${escapeHtml(formatFiscalId(fiscalIssuerRnc)) || "No disponible"}<br />
+            <strong>Direcci&oacute;n:</strong> ${escapeHtml(fiscalIssuerAddress) || "No disponible"}<br />
+            <strong>Municipio:</strong> ${escapeHtml(fiscalMunicipality)} &middot; <strong>Provincia:</strong> ${escapeHtml(fiscalProvince)}<br />
+            <strong>Fecha Emisi&oacute;n:</strong> ${escapeHtml(issueDate)}
           </div>
         </div>
         <div class="aux-document-card">
-          <span>REPRESENTACI&Oacute;N IMPRESA DE PRUEBA</span>
           <h4>${escapeHtml(invoice.ecf_label || `e-CF ${invoice.ecf_type}`)}</h4>
           <strong>e-NCF:</strong> ${escapeHtml(encf)}<br />
-          <strong>Vencimiento de secuencia:</strong> ${escapeHtml(sequenceExpiry)}<br />
-          <strong>Ambiente:</strong> TesteCF
+          ${showExpiry ? `<strong>Fecha Vencimiento:</strong> ${escapeHtml(sequenceExpiry)}` : ""}
         </div>
       </header>
 
-      <section class="aux-buyer-card">
-        <div>
-          <strong>Raz&oacute;n social / Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
-          <strong>RNC/C&eacute;dula/Pasaporte:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}
-        </div>
-        <div>
-          <strong>Tipo de receptor:</strong> ${invoice.rnc_cedula ? "Identificado" : "Consumidor Final"}<br />
-          <strong>Direcci&oacute;n:</strong> ${escapeHtml(invoice.address || "") || "No indicada"}
-        </div>
-      </section>
+      ${showBuyer ? `
+        <section class="aux-buyer-card">
+          <strong>Raz&oacute;n Social Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
+          <strong>RNC Cliente:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}
+        </section>
+      ` : `<div class="aux-section-divider" aria-hidden="true"></div>`}
 
       <table class="aux-items-table">
         <thead>
           <tr>
-            <th>No.</th>
-            <th>Descripci&oacute;n</th>
             <th>Cantidad</th>
-            <th>Unidad</th>
-            <th>Valor Unitario</th>
-            <th>Descuento Unitario</th>
-            <th>Monto</th>
+            <th>Descripci&oacute;n</th>
+            <th>Unidad de<br />Medida</th>
+            <th>Precio</th>
             <th>ITBIS</th>
-            <th>Valor Item</th>
+            <th>Valor</th>
           </tr>
         </thead>
         <tbody>
-          ${items.map((item, index) => auxiliaryItemRow(item, index)).join("") || `<tr><td colspan="9">Sin detalle</td></tr>`}
+          ${items.map((item, index) => auxiliaryItemRow(item, index)).join("") || `<tr><td colspan="6">Sin detalle</td></tr>`}
         </tbody>
       </table>
 
@@ -2320,41 +2675,30 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
               <a class="aux-qr" href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer" aria-label="Consultar comprobante en DGII TesteCF">
                 <img src="/api/invoices/${encodeURIComponent(invoice.id)}/qr.svg" alt="QR oficial de consulta DGII TesteCF" />
               </a>
-              <div>
-                <strong>Consulta DGII TesteCF</strong><br />
-                Escanea el QR para consultar el timbre electr&oacute;nico de prueba.<br />
-                <strong>C&oacute;digo de seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
-                <strong>Fecha y hora de firma:</strong> ${escapeHtml(signatureDate)}<br />
-                <a href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer">Abrir consulta DGII</a>
+              <div class="aux-qr-copy">
+                <strong>C&oacute;digo de Seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
+                <strong>Fecha Firma:</strong> ${escapeHtml(signatureDate)}<br />
+                <a class="aux-dgii-link" href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer">Consultar comprobante en DGII</a>
               </div>
             ` : `
               <div class="aux-qr-unavailable">QR DGII pendiente</div>
-              <span>IMECF todav&iacute;a no ha devuelto una URL oficial de consulta. No se genera un QR ficticio.</span>
+              <span>El proveedor todav&iacute;a no devolvi&oacute; una URL oficial de TESTeCF. No se genera un QR ficticio ni un c&oacute;digo de seguridad oficial.</span>
             `}
           </div>
-          <table class="aux-tax-table">
-            <thead><tr><th colspan="3">Desglose ITBIS</th></tr></thead>
-            <tbody>
-              <tr><th>Monto Base</th><th>%</th><th>Impuesto</th></tr>
-              <tr><td>${plainMoney(invoice.subtotal)}</td><td>18</td><td>${plainMoney(invoice.tax)}</td></tr>
-              <tr><td colspan="2"><strong>Total ITBIS</strong></td><td><strong>${plainMoney(invoice.tax)}</strong></td></tr>
-            </tbody>
-          </table>
         </div>
 
         <div class="aux-total-stack">
           ${auxTotalRow("Subtotal gravado", invoice.subtotal)}
-          ${auxTotalRow("Descuento", invoice.discount_total || 0)}
-          ${auxTotalRow("Monto Gravado ITBIS", invoice.subtotal)}
-          ${auxTotalRow("Total Impuesto", invoice.tax)}
+          ${auxTotalRow("Descuento aplicado", invoice.discount_total || 0)}
+          ${auxTotalRow("Total ITBIS", invoice.tax)}
           ${auxTotalRow("Total", invoice.total, true)}
-          ${auxTotalRow("Forma de Pago", paymentLabel)}
+          ${creditApplied > 0 ? auxTotalRow("Nota de crédito aplicada", -creditApplied) : ""}
+          ${creditApplied > 0 ? auxTotalRow("Monto cobrado", invoice.amount_due || 0, true) : ""}
+          <div class="aux-payment-summary"><span>Forma de pago</span><strong>${escapeHtml(paymentLabel)}</strong></div>
         </div>
       </div>
 
-      <div class="aux-status-line">${escapeHtml(statusLine)}</div>
-      <div class="aux-status-line">ID IMECF: ${escapeHtml(invoice.provider_document_id || "Pendiente")}</div>
-      ${trackingUrl ? `<div class="aux-status-line">Token de seguimiento: <a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noreferrer">Consultar estado remoto</a></div>` : ""}
+      <footer class="aux-fiscal-footer">Sin validez fiscal.</footer>
       ${warning ? `<p class="notice-error aux-warning"><strong>Motivo de rechazo:</strong> ${escapeHtml(warning)}</p>` : ""}
     </section>
   `;
@@ -2366,18 +2710,17 @@ function auxiliaryItemRow(item, index) {
   const discount = Number(item.discount_amount || 0);
   const tax = Number(item.line_tax || 0);
   const subtotal = Number(item.line_subtotal || (quantity * unitPrice));
-  const total = Number(item.line_total || (subtotal - discount + tax));
+  const value = Math.max(0, subtotal - discount);
+  const exemptIndicator = Number(item.tax_rate || 0) === 0 ? "E " : "";
+  const discountNote = discount > 0 ? ` <small>(Desc. ${plainMoney(discount)})</small>` : "";
   return `
     <tr>
-      <td>${String(index + 1).padStart(4, "0")}</td>
-      <td>${escapeHtml(item.name || item.product_id || "Art?culo")}</td>
       <td>${formatQty(quantity)}</td>
+      <td>${exemptIndicator}${escapeHtml(item.name || item.product_id || "Articulo")}${discountNote}</td>
       <td>UND</td>
       <td>${plainMoney(unitPrice)}</td>
-      <td>${plainMoney(discount)}</td>
-      <td>${plainMoney(subtotal - discount)}</td>
       <td>${plainMoney(tax)}</td>
-      <td>${plainMoney(total)}</td>
+      <td>${plainMoney(value)}</td>
     </tr>
   `;
 }
@@ -2392,8 +2735,10 @@ function paymentLabelFor(method) {
     efectivo: "Efectivo",
     tarjeta: "Tarjeta",
     paypal: "PayPal",
-    transferencia: "Transf. / Dep?sito a cta. bancaria",
-    credito: "Cr?dito",
+    transferencia: "Transferencia / depósito bancario",
+    credito: "Crédito",
+    nota_credito: "Nota de crédito",
+    mixto: "Pago mixto",
   }[String(method || "").toLowerCase()] || "Efectivo";
 }
 
@@ -2419,8 +2764,11 @@ function formatReceiptDateTime(value) {
 function renderOnlinePaymentStatus() {
   const box = $("#online-payment-status");
   const button = $("#open-payment-gateway");
-  const method = $("#payment-method").value;
-  if (!["tarjeta", "paypal"].includes(method)) {
+  let online = null;
+  try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (_) { online = null; }
+  const method = online?.payment_method || "";
+  const payableTotal = Number(online?.amount || 0);
+  if (!online || payableTotal <= 0) {
     box.hidden = true;
     button.hidden = true;
     return;
@@ -2544,7 +2892,7 @@ async function openRealCardFields(paypal, createOrder, onApprove, onError) {
 }
 
 function confirmSimulatedPayment(method) {
-  const total = cartTotals().total;
+  const total = salePayableTotal();
   if (total <= 0) {
     toast("Agrega articulos con un total mayor que cero para cobrar.", true);
     return;

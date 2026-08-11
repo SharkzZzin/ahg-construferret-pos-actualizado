@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import settings
+
+
+DGII_TIMEZONE = timezone(timedelta(hours=-4))
 
 
 class IMECFError(RuntimeError):
@@ -278,7 +281,12 @@ def build_send_payload(invoice: dict[str, Any]) -> dict[str, Any]:
     discount_total = float(invoice.get("discount_total") or 0)
     general_discount = float(invoice.get("general_discount") or 0)
     payment_method = str(invoice.get("payment_method") or "efectivo").strip().lower()
-    is_credit = payment_method == "credito"
+    stored_payments = list(invoice.get("payments") or [])
+    is_credit = payment_method == "credito" or any(
+        str(row.get("payment_method") or "").lower() == "credito" for row in stored_payments
+    )
+    credit_applied = round(float(invoice.get("credit_applied") or 0), 2)
+    payable_total = round(total - credit_applied, 2)
     id_doc: dict[str, Any] = {
         "TipoeCF": ecf_type,
         "IndicadorEnvioDiferido": "1",
@@ -290,13 +298,21 @@ def build_send_payload(invoice: dict[str, Any]) -> dict[str, Any]:
     if is_credit:
         id_doc["FechaLimitePago"] = format_api_date(invoice.get("due_date") or invoice.get("issued_at"))
     else:
+        payment_rows = [
+            {
+                "FormaPago": payment_method_code(row.get("payment_method")),
+                "MontoPago": money(row.get("amount")),
+            }
+            for row in stored_payments
+            if float(row.get("amount") or 0) > 0 and str(row.get("payment_method") or "").lower() != "credito"
+        ]
+        if not payment_rows:
+            if credit_applied > 0:
+                payment_rows.append({"FormaPago": 7, "MontoPago": money(credit_applied)})
+            if payable_total > 0:
+                payment_rows.append({"FormaPago": payment_method_code(payment_method), "MontoPago": money(payable_total)})
         id_doc["TablaFormasPago"] = {
-            "FormaDePago": [
-                {
-                    "FormaPago": payment_method_code(payment_method),
-                    "MontoPago": money(total),
-                }
-            ]
+            "FormaDePago": payment_rows
         }
     header: dict[str, Any] = {
         "Version": "1.0",
@@ -426,13 +442,14 @@ def payment_method_code(method: Any) -> int:
         "cheque": 2,
         "transferencia": 2,
         "tarjeta": 3,
+        "nota_credito": 7,
         "paypal": 8,
     }.get(normalized, 1)
 
 
 def credit_note_indicator(source_issued_at: Any, note_issued_at: Any = None) -> str:
-    source_date = parse_api_date(source_issued_at)
-    note_date = parse_api_date(note_issued_at) if note_issued_at else datetime.now()
+    source_date = dgii_datetime(parse_api_date(source_issued_at))
+    note_date = dgii_datetime(parse_api_date(note_issued_at)) if note_issued_at else datetime.now(DGII_TIMEZONE)
     return "1" if (note_date.date() - source_date.date()).days > 30 else "0"
 
 
@@ -465,11 +482,15 @@ def quantity(value: Any) -> str:
 def format_api_date(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return datetime.now().strftime("%d-%m-%Y")
+        return datetime.now(DGII_TIMEZONE).strftime("%d-%m-%Y")
     try:
-        return datetime.fromisoformat(text).strftime("%d-%m-%Y")
+        return dgii_datetime(datetime.fromisoformat(text.replace("Z", "+00:00"))).strftime("%d-%m-%Y")
     except ValueError:
         return text
+
+
+def dgii_datetime(value: datetime) -> datetime:
+    return value.astimezone(DGII_TIMEZONE) if value.tzinfo is not None else value
 
 
 def extract_document_metadata(data: dict[str, Any]) -> dict[str, str]:
