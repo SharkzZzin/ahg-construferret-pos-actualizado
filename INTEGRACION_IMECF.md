@@ -71,7 +71,7 @@ IMECF_WORKSPACE_NAME=UTESA
 4. Inicia la aplicacion normalmente:
 
 ```powershell
-$env:PYTHONPATH="$PWD\src"
+$env:PYTHONPATH="$PWD"
 python -m ahg_pos.app
 ```
 

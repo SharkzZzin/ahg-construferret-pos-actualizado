@@ -3,9 +3,31 @@ const errorBox = document.querySelector("#login-error");
 const button = document.querySelector("#login-button");
 const password = document.querySelector("#password");
 const loadingScreen = document.querySelector("#loading-screen");
+const accessDialog = document.querySelector("#access-dialog");
+const identifier = document.querySelector("#identifier");
 const setLoading = (visible) => loadingScreen?.classList.toggle("is-hidden", !visible);
 
+function setLoginOpen(open) {
+  accessDialog.hidden = !open;
+  document.body.classList.toggle("dialog-open", open);
+  if (open) {
+    window.requestAnimationFrame(() => identifier.focus());
+  }
+}
+
 window.addEventListener("load", () => setLoading(false));
+
+document.querySelectorAll("[data-open-login]").forEach((trigger) => {
+  trigger.addEventListener("click", () => setLoginOpen(true));
+});
+
+document.querySelectorAll("[data-close-login]").forEach((trigger) => {
+  trigger.addEventListener("click", () => setLoginOpen(false));
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !accessDialog.hidden) setLoginOpen(false);
+});
 
 document.querySelector("#toggle-password").addEventListener("click", (event) => {
   const show = password.type === "password";
@@ -24,7 +46,7 @@ form.addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        identifier: document.querySelector("#identifier").value,
+        identifier: identifier.value,
         password: password.value,
       }),
     });

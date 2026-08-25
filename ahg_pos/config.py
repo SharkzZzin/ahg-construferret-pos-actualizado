@@ -7,7 +7,7 @@ from pathlib import Path
 from .credential_store import load_credential_secret, save_credential_secret
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 SCHEMA_DIR = PROJECT_ROOT / "schema"
 
@@ -33,6 +33,7 @@ _load_local_env()
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "AHG CONSTRUFERRET POS"
+    academic_mode: bool = os.getenv("AHG_ACADEMIC_MODE", "1") != "0"
     host: str = os.getenv("AHG_HOST", "127.0.0.1")
     port: int = int(os.getenv("AHG_PORT", "8765"))
     database_url: str = os.getenv(
@@ -46,7 +47,12 @@ class Settings:
         "AHG_COMPANY_ADDRESS",
         "Santiago de los Caballeros, República Dominicana",
     )
-    fiscal_environment: str = os.getenv("AHG_FISCAL_ENV", "test")
+    company_municipality: str = os.getenv("AHG_COMPANY_MUNICIPALITY", "Santiago de los Caballeros")
+    company_province: str = os.getenv("AHG_COMPANY_PROVINCE", "Santiago")
+    fiscal_environment: str = (
+        "test" if os.getenv("AHG_ACADEMIC_MODE", "1") != "0"
+        else os.getenv("AHG_FISCAL_ENV", "test")
+    )
     imecf_base_url: str = os.getenv(
         "IMECF_BASE_URL",
         "https://ecf-platform-backend-50801509587.us-central1.run.app",
@@ -64,14 +70,28 @@ class Settings:
         "IMECF_PORTAL_BASE_URL",
         "https://ecf-platform-frontend-50801509587.us-central1.run.app",
     ).rstrip("/")
-    auth_secure_cookie: bool = os.getenv("AHG_AUTH_SECURE_COOKIE", "0") == "1"
+    auth_secure_cookie: bool = os.getenv(
+        "AHG_AUTH_SECURE_COOKIE", "1" if os.getenv("VERCEL") else "0"
+    ) == "1"
+    cron_secret: str = os.getenv("CRON_SECRET", "").strip()
+    public_quote_limit: int = int(os.getenv("AHG_PUBLIC_QUOTE_LIMIT", "5"))
+    public_ai_limit: int = int(os.getenv("AHG_PUBLIC_AI_LIMIT", "30"))
+    max_discount_without_approval_percent: float = float(
+        os.getenv("AHG_MAX_DISCOUNT_WITHOUT_APPROVAL_PERCENT", "10")
+    )
     credential_secret: str = os.getenv("AHG_CREDENTIAL_SECRET", "").strip() or load_credential_secret(DATA_DIR)
     paypal_client_id: str = os.getenv("PAYPAL_CLIENT_ID", "").strip()
     paypal_client_secret: str = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
-    paypal_environment: str = os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip().lower()
+    paypal_environment: str = (
+        "sandbox" if os.getenv("AHG_ACADEMIC_MODE", "1") != "0"
+        else os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip().lower()
+    )
     paypal_currency: str = os.getenv("PAYPAL_CURRENCY", "USD").strip().upper()
     paypal_dop_per_usd: float = float(os.getenv("PAYPAL_DOP_PER_USD", "60.00"))
-    paypal_no_charge: bool = os.getenv("PAYPAL_NO_CHARGE", "1") != "0"
+    paypal_no_charge: bool = (
+        True if os.getenv("AHG_ACADEMIC_MODE", "1") != "0"
+        else os.getenv("PAYPAL_NO_CHARGE", "1") != "0"
+    )
     ollama_enabled: bool = os.getenv("OLLAMA_ENABLED", "0") == "1"
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen3:1.7b").strip()

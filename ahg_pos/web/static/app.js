@@ -6,19 +6,26 @@ const state = {
   preinvoices: [],
   invoices: [],
   creditNotes: [],
+  imecfDiagnostics: {},
   currentPreinvoiceId: null,
   cart: [],
   ecfType: "32",
   imecfActive: false,
   imecfConfigured: false,
+  academicMode: true,
   fiscalDocuments: [],
   remoteFiscalDocuments: [],
   fiscalCompanies: [],
   fiscalFilter: "ALL",
   userRole: "",
+  userModules: [],
   paypal: null,
   paypalPayment: null,
   paypalSdkPromise: null,
+  availableCredit: 0,
+  availableCreditNotes: [],
+  cashSession: null,
+  cashHistory: [],
   fiscalIssuer: {},
   productPagination: null,
   masterProductPagination: null,
@@ -27,7 +34,45 @@ const state = {
   clientPagination: null,
   supplierPagination: null,
   webRequests: [],
+  auditPagination: null,
+  dashboard: null,
+  managementReport: null,
+  userName: "",
+  purchaseDraft: [],
+  purchases: [],
+  receivables: [],
+  creditSourceItems: [],
+  returnSourceItems: [],
 };
+
+const MODULE_DEFINITIONS = [
+  ["sale", "Venta"],
+  ["products", "Maestro de artículos"],
+  ["clients", "Clientes"],
+  ["suppliers", "Proveedores"],
+  ["purchases", "Compras"],
+  ["receivables", "Cuentas por cobrar"],
+  ["returns", "Devoluciones"],
+  ["preinvoices", "Pre-Facturas"],
+  ["assistant", "Asistente IA"],
+  ["inventory", "Inventario"],
+  ["fiscal", "Gestión Fiscal"],
+  ["reports", "Facturas"],
+  ["cash", "Cuadre de caja"],
+  ["audit", "Auditoría"],
+  ["admin", "Administración"],
+];
+
+const ROLE_DEFAULT_MODULES = {
+  admin: MODULE_DEFINITIONS.map(([module]) => module),
+  gerente: MODULE_DEFINITIONS.map(([module]) => module).filter((module) => module !== "admin"),
+  cajero: ["sale", "clients", "preinvoices", "returns", "receivables", "reports", "cash"],
+  vendedor: ["sale", "clients", "preinvoices", "assistant", "returns", "receivables", "reports"],
+  almacen: ["products", "suppliers", "purchases", "inventory"],
+};
+
+const moduleLabel = (module) => module === "dashboard" ? "Inicio" : MODULE_DEFINITIONS.find(([key]) => key === module)?.[1] || module;
+const hasModule = (module) => module === "dashboard" || state.userModules.includes(module);
 
 const money = new Intl.NumberFormat("es-DO", {
   style: "currency",
@@ -42,16 +87,23 @@ const setLoading = (visible) => $("#loading-screen")?.classList.toggle("is-hidde
 document.addEventListener("DOMContentLoaded", async () => {
   enhanceUi();
   bindTabs();
+  bindDashboard();
   bindSale();
   bindProductMaster();
   bindClients();
   bindSuppliers();
+  bindPurchases();
+  bindReceivables();
+  bindReturns();
   bindPreinvoices();
   bindAssistant();
   bindWebRequests();
   bindInventory();
   bindFiscal();
   bindReports();
+  bindCash();
+  bindAudit();
+  bindAdmin();
   bindDialog();
   try {
     await boot();
@@ -65,37 +117,28 @@ async function boot() {
   $("#db-status").textContent = `BD ${health.database}`;
   $("#user-status").textContent = `${health.user.name} · ${health.user.role}`;
   state.userRole = health.user.role;
+  state.userName = health.user.name || "Usuario";
+  state.userModules = Array.isArray(health.user.modules) ? health.user.modules : [];
   state.paypal = health.paypal || { configured: false };
   state.fiscalIssuer = health.fiscal_issuer || {};
+  state.academicMode = Boolean(health.academic_mode);
   $("#issuer-label").textContent = `IMECF: ${health.fiscal_issuer.workspace_name} · Emisor certificado: ${health.fiscal_issuer.name} · RNC ${health.fiscal_issuer.rnc}`;
   state.imecfActive = Boolean(health.imecf_active);
   state.imecfConfigured = Boolean(health.imecf_configured);
   renderFiscalMode(health);
-  await refreshProducts();
-  await refreshClients();
-  await refreshSuppliers();
-  await refreshPreinvoices();
-  await refreshWebRequests();
-  decorateWebRequests();
-  await refreshReports();
-  await refreshFiscal();
+  applyModuleAccess();
+  await setView("dashboard", true);
 }
 
 function renderFiscalMode(health) {
   const status = $("#fiscal-status");
-  const title = $("#fiscal-mode-title");
-  const copy = $("#fiscal-mode-copy");
   if (health.imecf_active) {
-    status.textContent = "IMECF conectado";
+    status.textContent = "IMECF Test conectado";
     status.className = "status-pill";
-    title.textContent = "Facturación electrónica activa";
-    copy.textContent = "Al emitir, el documento será enviado a IMECF.";
     return;
   }
   status.textContent = health.imecf_configured ? "IMECF desactivado" : "IMECF sin configurar";
   status.className = "status-pill warning";
-  title.textContent = "Facturacion local";
-  copy.textContent = "El comprobante se guardara localmente y no se enviara a DGII.";
 }
 
 function bindTabs() {
@@ -104,7 +147,47 @@ function bindTabs() {
   });
 }
 
-function setView(view) {
+function applyModuleAccess() {
+  $$(".tab[data-view]").forEach((button) => { button.hidden = !hasModule(button.dataset.view); });
+  $$(".view[id]").forEach((section) => {
+    const authorized = hasModule(section.id);
+    section.setAttribute("aria-hidden", String(!authorized));
+    if (!authorized) section.classList.remove("active");
+  });
+  const firstModule = "dashboard";
+  if (!firstModule) toast("Tu usuario no tiene módulos asignados. Solicita acceso al administrador.", true);
+  return firstModule;
+}
+
+async function refreshViewData(view) {
+  if (view === "dashboard") await refreshDashboard();
+  if (view === "sale") {
+    await refreshProducts();
+    await refreshClients();
+    await refreshPreinvoices();
+    await refreshWebRequests();
+  }
+  if (view === "fiscal") await refreshFiscal();
+  if (view === "products") await refreshProductMaster();
+  if (view === "clients") await refreshClients();
+  if (view === "suppliers") await refreshSuppliers();
+  if (view === "purchases") await refreshPurchases();
+  if (view === "receivables") await refreshReceivables();
+  if (view === "returns") await refreshReturns();
+  if (view === "preinvoices") await refreshPreinvoices();
+  if (view === "inventory") await refreshProducts();
+  if (view === "reports") await refreshReports();
+  if (view === "audit") await refreshAudit();
+  if (view === "cash") await refreshCash();
+  if (view === "admin") await refreshAdmin();
+}
+
+async function setView(view, refresh = true) {
+  if (!hasModule(view)) {
+    const fallback = "dashboard";
+    if (!fallback) return;
+    view = fallback;
+  }
   $$(".tab").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.view === view)));
   $$(".view").forEach((section) => {
@@ -116,15 +199,185 @@ function setView(view) {
     }
   });
   document.body.dataset.view = view;
-  if (view === "fiscal") refreshFiscal();
-  if (view === "products") refreshProductMaster();
-  if (view === "clients") refreshClients();
-  if (view === "suppliers") refreshSuppliers();
-  if (view === "preinvoices") refreshPreinvoices();
+  if (refresh) await refreshViewData(view);
+}
+
+function bindDashboard() {
+  $("#dashboard")?.addEventListener("click", (event) => {
+    const target = event.target.closest?.("[data-dashboard-view]");
+    if (!target) return;
+    setView(target.dataset.dashboardView);
+  });
+}
+
+async function refreshDashboard() {
+  const payload = await api("/api/dashboard");
+  state.dashboard = payload;
+  const now = new Date();
+  const hour = now.getHours();
+  const greeting = hour < 12 ? "Buenos días" : hour < 18 ? "Buenas tardes" : "Buenas noches";
+  $("#dashboard-greeting").textContent = `${greeting}, ${state.userName.split(" ")[0]}`;
+  $("#dashboard-date").textContent = new Intl.DateTimeFormat("es-DO", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(now);
+
+  const sales = payload.sales || {};
+  const pending = payload.pending || {};
+  const inventory = payload.inventory || {};
+  const cash = payload.cash || {};
+  const pendingTotal = Number(pending.preinvoices || 0) + Number(pending.customer_requests || 0);
+  const cashValue = cash.status === "abierta" ? money.format(cash.expected_cash || cash.opening_amount || 0) : "Sin turno";
+  $("#dashboard-kpis").innerHTML = [
+    ["Ventas de hoy", money.format(sales.total || 0), `${sales.invoice_count || 0} comprobante(s)`, "sale", "teal"],
+    ["Pendientes", String(pendingTotal), `${pending.preinvoices || 0} pre-facturas · ${pending.customer_requests || 0} portal`, "preinvoices", "amber"],
+    ["Stock crítico", String(inventory.low_stock || 0), `${inventory.active_products || 0} artículos activos`, "inventory", Number(inventory.low_stock || 0) ? "red" : "green"],
+    ["Caja", cashValue, cash.status === "abierta" ? "Turno abierto" : "Abre un turno para operar", "cash", cash.status === "abierta" ? "green" : "neutral"],
+  ].filter(([, , , view]) => hasModule(view)).map(([label, value, detail, view, tone]) => `
+    <button class="dashboard-kpi ${tone}" type="button" data-dashboard-view="${view}">
+      <span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small><i aria-hidden="true">→</i>
+    </button>`).join("");
+
+  renderDashboardChart(payload.trend || []);
+  renderDashboardStatus(payload);
+  renderDashboardRecent(payload.recent_invoices || []);
+  renderDashboardTopProducts(payload.top_products || []);
+  renderDashboardQuickActions();
+  $$("#dashboard [data-dashboard-view]").forEach((button) => { button.hidden = !hasModule(button.dataset.dashboardView); });
+}
+
+function renderDashboardChart(rows) {
+  const maximum = Math.max(1, ...rows.map((row) => Number(row.total || 0)));
+  const weekTotal = rows.reduce((sum, row) => sum + Number(row.total || 0), 0);
+  $("#dashboard-week-total").textContent = money.format(weekTotal);
+  $("#dashboard-chart").innerHTML = rows.map((row) => {
+    const day = new Date(`${row.date}T12:00:00`);
+    const height = Math.max(Number(row.total || 0) > 0 ? 10 : 3, Math.round(Number(row.total || 0) / maximum * 100));
+    return `<div class="dashboard-bar-column" title="${escapeHtml(row.date)} · ${money.format(row.total || 0)}">
+      <span>${row.invoice_count || 0}</span><div class="dashboard-bar-track"><i style="height:${height}%"></i></div><strong>${escapeHtml(new Intl.DateTimeFormat("es-DO", { weekday: "short" }).format(day).replace(".", ""))}</strong>
+    </div>`;
+  }).join("");
+}
+
+function renderDashboardStatus(payload) {
+  const fiscal = payload.fiscal || {};
+  const credits = payload.credits || {};
+  const sales = payload.sales || {};
+  const pending = payload.pending || {};
+  const rows = [
+    ["ITBIS facturado", money.format(sales.tax || 0), "reports", "normal"],
+    ["Descuentos aplicados", money.format(sales.discounts || 0), "reports", "normal"],
+    ["Crédito aplicado", money.format(sales.credit_applied || 0), "sale", "normal"],
+    ["Notas vigentes", `${credits.count || 0} · ${money.format(credits.available_total || 0)}`, "sale", Number(credits.count || 0) ? "attention" : "normal"],
+    ["Cuentas por cobrar", money.format(pending.receivables_due || 0), "receivables", Number(pending.receivables_due || 0) ? "attention" : "normal"],
+    ["Cuentas por pagar", money.format(pending.payables_due || 0), "purchases", Number(pending.payables_due || 0) ? "attention" : "normal"],
+    ["e-CF aceptados hoy", String(fiscal.accepted_today || 0), "fiscal", "success"],
+    ["e-CF por revisar", String(fiscal.attention_today || 0), "fiscal", Number(fiscal.attention_today || 0) ? "danger" : "success"],
+  ];
+  $("#dashboard-status").innerHTML = rows.filter(([, , view]) => hasModule(view)).map(([label, value, view, tone]) => `<button type="button" data-dashboard-view="${view}"><span><i class="status-dot ${tone}"></i>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></button>`).join("");
+}
+
+function renderDashboardRecent(invoices) {
+  const container = $("#dashboard-recent");
+  container.innerHTML = invoices.map((invoice) => `<button type="button" data-dashboard-view="reports"><span><strong>${escapeHtml(invoice.provider_encf || invoice.en_ncf)}</strong><small>${escapeHtml(invoice.client_name || "Consumidor Final")} · ${escapeHtml(formatDate(invoice.issued_at))}</small></span><span class="dashboard-amount">${money.format(invoice.total || 0)}<small>${escapeHtml(invoice.api_status || invoice.status || "Local")}</small></span></button>`).join("") || `<div class="empty-state">Todavía no hay comprobantes para mostrar.</div>`;
+}
+
+function renderDashboardTopProducts(products) {
+  $("#dashboard-top-products").innerHTML = products.map((product, index) => `<article><span class="dashboard-rank">${index + 1}</span><div><strong>${escapeHtml(product.name)}</strong><small>${escapeHtml(product.sku)} · ${Number(product.quantity || 0)} unidad(es)</small></div><b>${money.format(product.total || 0)}</b></article>`).join("") || `<div class="empty-state">Las ventas de hoy aparecerán aquí.</div>`;
+}
+
+function renderDashboardQuickActions() {
+  const actions = [
+    ["sale", "Nueva venta", "Crear una pre-factura o comprobante"],
+    ["preinvoices", "Pre-facturas", "Revisar solicitudes pendientes"],
+    ["inventory", "Inventario", "Consultar existencias y alertas"],
+    ["purchases", "Compras", "Recibir mercancía y pagar proveedores"],
+    ["receivables", "Cuentas por cobrar", "Registrar cobros de ventas a crédito"],
+    ["cash", "Cuadre de caja", "Abrir, revisar o cerrar el turno"],
+    ["fiscal", "Gestión fiscal", "Consultar estados y documentos"],
+    ["admin", "Usuarios", "Administrar accesos por módulo"],
+  ];
+  $("#dashboard-quick-actions").innerHTML = actions.filter(([view]) => hasModule(view)).map(([view, title, detail]) => `<button type="button" data-dashboard-view="${view}"><span>${escapeHtml(title.slice(0, 1))}</span><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></div><i>→</i></button>`).join("");
+}
+
+function bindAdmin() {
+  $("#user-form")?.addEventListener("submit", saveUser);
+  $("#download-backup")?.addEventListener("click", downloadBackup);
+  $("#user-role")?.addEventListener("change", () => renderUserModuleOptions(ROLE_DEFAULT_MODULES[$("#user-role").value] || []));
+  renderUserModuleOptions(ROLE_DEFAULT_MODULES.cajero);
+}
+
+function renderUserModuleOptions(selected = []) {
+  const container = $("#user-module-options");
+  if (!container) return;
+  const role = $("#user-role").value;
+  const effective = role === "admin" ? MODULE_DEFINITIONS.map(([module]) => module) : selected;
+  container.innerHTML = MODULE_DEFINITIONS.map(([module, label]) => `<label class="module-option"><input type="checkbox" value="${module}" ${effective.includes(module) ? "checked" : ""} ${role === "admin" ? "disabled" : ""} /><span>${escapeHtml(label)}</span></label>`).join("");
+}
+
+function selectedUserModules() {
+  return $$("#user-module-options input:checked").map((input) => input.value);
+}
+
+function resetUserForm() {
+  $("#user-form").reset();
+  $("#user-form-id").value = "";
+  $("#user-form-title").textContent = "Nuevo usuario";
+  $("#user-password").placeholder = "Mínimo 8 caracteres";
+  renderUserModuleOptions(ROLE_DEFAULT_MODULES.cajero);
+}
+
+async function refreshAdmin() {
+  if (!$("#user-list")) return;
+  try {
+    const payload = await api("/api/users");
+    $("#user-list").innerHTML = (payload.users || []).map((user) => `<article class="client-card"><div><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)} · ${escapeHtml(user.role)} · ${user.active ? "Activo" : "Inactivo"}</span><span>Último acceso: ${escapeHtml(user.last_login_at ? formatDate(user.last_login_at) : "Nunca")}</span><div class="user-module-summary">${(user.modules || []).map((module) => `<span>${escapeHtml(moduleLabel(module))}</span>`).join("") || "<em>Sin módulos asignados</em>"}</div></div><div class="company-actions"><button class="table-button" type="button" data-edit-user="${user.id}">Editar accesos</button></div></article>`).join("") || `<div class="empty-state">No hay usuarios registrados.</div>`;
+    $("#user-list").querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => editUser((payload.users || []).find((user) => String(user.id) === String(button.dataset.editUser)))));
+  } catch (exception) { toast(exception.message, true); }
+}
+
+function editUser(user) {
+  if (!user) return;
+  $("#user-form-id").value = user.id; $("#user-name").value = user.name || ""; $("#user-email").value = user.email || ""; $("#user-phone").value = user.phone || ""; $("#user-role").value = user.role || "cajero"; $("#user-active").checked = Boolean(user.active); $("#user-password").value = ""; $("#user-form-title").textContent = "Editar usuario"; $("#user-password").placeholder = "Vacío para conservar la actual";
+  renderUserModuleOptions(user.modules || ROLE_DEFAULT_MODULES[user.role] || []);
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  const id = $("#user-form-id").value, error = $("#user-form-error"), button = $("#save-user");
+  error.hidden = true; button.disabled = true;
+  try {
+    const payload = { name: $("#user-name").value.trim(), email: $("#user-email").value.trim(), phone: $("#user-phone").value.trim(), role: $("#user-role").value, password: $("#user-password").value, active: $("#user-active").checked, modules: selectedUserModules() };
+    await api(id ? `/api/users/${id}` : "/api/users", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    resetUserForm(); await refreshAdmin(); toast(id ? "Usuario actualizado." : "Usuario creado.");
+  } catch (exception) { error.textContent = exception.message; error.hidden = false; } finally { button.disabled = false; }
+}
+
+async function downloadBackup() {
+  const status = $("#backup-status"), button = $("#download-backup"); button.disabled = true; status.hidden = true;
+  try { const currentPassword = window.prompt("Confirma tu contraseña de administrador para generar el respaldo:"); if (!currentPassword) throw new Error("Respaldo cancelado."); const response = await fetch("/api/admin/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_password: currentPassword }) }); if (!response.ok) throw new Error((await response.json()).error || "No se pudo generar el backup."); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `ahg-pos-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url); status.textContent = "Backup sanitizado descargado correctamente."; status.className = "client-validation ok"; status.hidden = false; } catch (exception) { status.textContent = exception.message; status.className = "client-validation error"; status.hidden = false; } finally { button.disabled = false; }
+}
+
+function bindAudit() {
+  $("#refresh-audit")?.addEventListener("click", () => refreshAudit(1));
+  let timer;
+  $("#audit-search")?.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => refreshAudit(1), 250); });
+}
+
+async function refreshAudit(page = 1) {
+  if (!$("#audit-table")) return;
+  const query = $("#audit-search").value.trim();
+  const payload = await api(`/api/audit?page=${page}&limit=50&q=${encodeURIComponent(query)}`);
+  const result = payload.logs || {};
+  state.auditPagination = result;
+  const logs = result.items || [];
+  $("#audit-summary").innerHTML = `<span class="summary-chip">${result.total || 0} acciones de usuarios</span><span class="summary-chip">Página ${result.page || 1} de ${result.pages || 1}</span>`;
+  $("#audit-table").innerHTML = logs.map((log) => {
+    const details = Object.entries(log.details || {}).map(([key, value]) => `${key}: ${value}`).join(" · ");
+    return `<tr><td>${escapeHtml(formatDate(log.created_at))}</td><td>${escapeHtml(log.user_name || "Sistema")}</td><td><strong>${escapeHtml(log.action)}</strong></td><td>${escapeHtml(log.entity_type || "")}</td><td>${escapeHtml(log.entity_id || "—")}</td><td>${escapeHtml(details || "—")}</td></tr>`;
+  }).join("") || `<tr><td colspan="6">No hay eventos para este filtro.</td></tr>`;
+  renderPager("audit-table", result, (nextPage) => refreshAudit(nextPage));
 }
 
 function enhanceUi() {
-  document.body.dataset.view = "sale";
+  document.body.dataset.view = "dashboard";
   $$(".tab").forEach((button) => button.setAttribute("aria-selected", String(button.classList.contains("active"))));
   createCommandPalette();
 
@@ -170,6 +423,7 @@ function createCommandPalette() {
     </section>`;
   document.body.appendChild(palette);
   const actions = [
+    ["Ir al inicio", "Abrir el resumen operativo", "dashboard", "Inicio"],
     ["Nueva venta", "Abrir el mostrador", "sale", "Venta"],
     ["Buscar productos", "Ir al maestro de artículos", "products", "Maestro de artículos"],
     ["Consultar IA", "Buscar una recomendación técnica", "assistant", "Asistente IA"],
@@ -180,7 +434,7 @@ function createCommandPalette() {
   const render = (term = "") => {
     const needle = normalize(term);
     $("#command-list").innerHTML = actions
-      .filter((item) => normalize(item.join(" ")).includes(needle))
+      .filter((item) => hasModule(item[2]) && normalize(item.join(" ")).includes(needle))
       .map(([title, description, view, label]) => `<button class="command-item" type="button" data-command-view="${view}"><span class="command-icon">${label.slice(0, 1)}</span><span><strong>${title}</strong><small>${description}</small></span><kbd>↵</kbd></button>`)
       .join("") || `<p class="command-empty">No encontramos esa acción.</p>`;
     $$("[data-command-view]").forEach((button) => button.addEventListener("click", () => { setView(button.dataset.commandView); toggleCommandPalette(false); }));
@@ -194,11 +448,13 @@ function toggleCommandPalette(open) {
   const palette = $("#command-palette");
   if (!palette) return;
   palette.hidden = !open;
-  if (open) { $("#command-search").value = ""; $("#command-search").focus(); }
+  if (open) { $("#command-search").value = ""; $("#command-search").dispatchEvent(new Event("input")); $("#command-search").focus(); }
 }
 
 function bindWebRequests() {
   $("#refresh-web-requests").addEventListener("click", refreshWebRequests);
+  $("#close-web-request-preview").addEventListener("click", () => $("#web-request-preview-dialog").close());
+  $("#close-web-request-preview-footer").addEventListener("click", () => $("#web-request-preview-dialog").close());
 }
 
 async function refreshWebRequests() {
@@ -207,23 +463,79 @@ async function refreshWebRequests() {
   $("#web-request-list").innerHTML = state.webRequests.map((request) => `
     <article class="preinvoice-card">
       <div><div class="document-title"><strong>Solicitud #${request.id} · ${escapeHtml(request.customer_name)}</strong><span class="badge warning">${escapeHtml(request.status)}</span></div>
-      <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Problema:</strong> ${escapeHtml(request.problem)}</p>
+      <p>${escapeHtml(request.phone)} ${request.email ? `· ${escapeHtml(request.email)}` : ""}</p><p><strong>Motivo:</strong> ${escapeHtml(request.problem||"No indicado")}</p>
       <span>${request.items.length} artículos · ${formatDate(request.created_at)}</span></div>
-      <div><strong>${money.format(request.total)}</strong><br/><small>${request.items.map((item) => `${escapeHtml(item.name)} x${item.quantity}`).join(", ")}</small></div>
+      <div class="web-request-summary"><strong class="web-request-total">${money.format(request.total)}</strong></div>
     </article>`).join("") || `<div class="empty-state">No hay solicitudes del catálogo.</div>`;
+  decorateWebRequests();
 }
 
 function decorateWebRequests() {
   $("#web-request-list").querySelectorAll(".preinvoice-card").forEach((card, index) => {
     const request = state.webRequests[index];
-    if (!request || card.querySelector("[data-load-web-request]")) return;
-    const button = document.createElement("button");
-    button.className = "primary-button compact";
-    button.textContent = "Cargar en ventas";
-    button.dataset.loadWebRequest = request.id;
-    button.addEventListener("click", () => loadWebRequest(request.id));
-    card.lastElementChild?.appendChild(button);
+    if (!request || card.querySelector("[data-web-request-actions]")) return;
+    const actions = document.createElement("div");
+    actions.dataset.webRequestActions = request.id;
+    actions.className = "web-request-actions";
+    const previewButton = document.createElement("button");
+    previewButton.className = "request-action-button preview";
+    previewButton.type = "button";
+    previewButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg><span>Vista previa</span>';
+    previewButton.dataset.previewWebRequest = request.id;
+    previewButton.addEventListener("click", () => showWebRequestPreview(request.id));
+    const loadButton = document.createElement("button");
+    loadButton.className = "request-action-button load";
+    loadButton.type = "button";
+    loadButton.textContent = "Cargar en ventas";
+    loadButton.dataset.loadWebRequest = request.id;
+    loadButton.addEventListener("click", () => loadWebRequest(request.id));
+    const deleteButton = document.createElement("button");
+    deleteButton.className = "request-action-button delete";
+    deleteButton.type = "button";
+    deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg><span>Eliminar</span>';
+    deleteButton.dataset.deleteWebRequest = request.id;
+    deleteButton.addEventListener("click", () => deleteWebRequest(request.id));
+    actions.append(previewButton, loadButton, deleteButton);
+    card.lastElementChild?.appendChild(actions);
   });
+}
+
+function showWebRequestPreview(requestId) {
+  const request = state.webRequests.find((item) => Number(item.id) === Number(requestId));
+  if (!request) return;
+  $("#web-request-preview-title").textContent = `Prefactura #${request.id}`;
+  $("#web-request-preview").innerHTML = `
+    <section class="request-preview-customer">
+      <div><span>Cliente</span><strong>${escapeHtml(request.customer_name)}</strong></div>
+      <div><span>Teléfono</span><strong>${escapeHtml(request.phone || "No indicado")}</strong></div>
+      <div><span>Correo</span><strong>${escapeHtml(request.email || "No indicado")}</strong></div>
+      <div><span>Comprobante</span><strong>e-CF ${escapeHtml(request.ecf_type || "32")}</strong></div>
+    </section>
+    <section class="request-preview-note"><span>Motivo o comentario</span><p>${escapeHtml(request.problem || "No indicado")}</p></section>
+    <div class="request-preview-table-wrap"><table class="request-preview-table">
+      <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr></thead>
+      <tbody>${(request.items || []).map((item) => {
+        const quantity = Number(item.quantity || 0);
+        const unitPrice = Number(item.unit_price || 0);
+        const amount = Number(item.line_subtotal || quantity * unitPrice);
+        return `<tr><td><strong>${escapeHtml(item.name || "Producto")}</strong><small>${escapeHtml(item.sku || "")}</small></td><td>${quantity}</td><td>${money.format(unitPrice)}</td><td>${money.format(amount)}</td></tr>`;
+      }).join("")}</tbody>
+    </table></div>
+    <section class="request-preview-totals">
+      <div><span>Subtotal</span><strong>${money.format(request.subtotal || 0)}</strong></div>
+      <div><span>ITBIS</span><strong>${money.format(request.tax || 0)}</strong></div>
+      <div class="total"><span>Total</span><strong>${money.format(request.total || 0)}</strong></div>
+    </section>`;
+  const dialog = $("#web-request-preview-dialog");
+  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "open");
+}
+
+async function deleteWebRequest(requestId) {
+  const request = state.webRequests.find((item) => Number(item.id) === Number(requestId));
+  if (!request || !window.confirm(`¿Eliminar la prefactura #${request.id} de ${request.customer_name}? Esta acción no se puede deshacer.`)) return;
+  await api(`/api/public/quote-requests/${request.id}`, { method: "DELETE" });
+  toast(`Prefactura #${request.id} eliminada.`);
+  await refreshWebRequests();
 }
 
 async function loadWebRequest(requestId) {
@@ -733,6 +1045,7 @@ function bindSale() {
     state.currentPreinvoiceId = null;
     $("#sale-notes").value = "";
     $("#general-discount").value = "0";
+    resetCreditRedemption();
     renderCart();
   });
   $$(".segment").forEach((button) => {
@@ -750,18 +1063,46 @@ function bindSale() {
   });
   $("#lookup-client").addEventListener("click", lookupClient);
   $("#client-select").addEventListener("change", selectRegisteredClient);
+  $("#check-credit").addEventListener("click", () => refreshCreditAvailability(true));
+  $("#credit-note-code").addEventListener("input", (event) => {
+    event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 13);
+    state.availableCredit = 0;
+    state.availableCreditNotes = [];
+    $("#credit-amount").value = "0";
+    renderCreditAvailability();
+    renderTotals();
+  });
+  $("#credit-amount").addEventListener("input", () => {
+    state.paypalPayment = null;
+    renderTotals();
+  });
   bindPartyInputs("client");
   $("#payment-method").addEventListener("change", () => {
     state.paypalPayment = null;
+    renderSplitPayment();
     renderOnlinePaymentStatus();
   });
+  $("#split-payment-enabled").addEventListener("change", () => {
+    state.paypalPayment = null;
+    renderSplitPayment(true);
+  });
+  $("#primary-payment-amount").addEventListener("input", () => {
+    state.paypalPayment = null;
+    renderSplitPayment();
+  });
+  $("#secondary-payment-method").addEventListener("change", () => {
+    state.paypalPayment = null;
+    renderSplitPayment();
+  });
   $("#open-payment-gateway").addEventListener("click", () => {
-    const total = cartTotals().total;
+    let online = null;
+    try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (exception) { toast(exception.message, true); return; }
+    const total = Number(online?.amount || 0);
     if (total <= 0) {
       toast("Agrega artículos con un total mayor que cero para cobrar.", true);
       return;
     }
-    openPaymentGateway($("#payment-method").value, total);
+    openPaymentGateway(online.payment_method, total);
   });
   $("#close-payment-dialog").addEventListener("click", () => $("#payment-dialog").close());
   $("#paypal-simulate-pay")?.addEventListener("click", () => confirmSimulatedPayment("paypal"));
@@ -777,14 +1118,168 @@ function bindSale() {
   $("#sim-card-expiry")?.addEventListener("input", formatCardExpiryInput);
 }
 
-function selectRegisteredClient() {
+async function selectRegisteredClient() {
   const client = state.clients.find((item) => Number(item.id) === Number($("#client-select").value));
+  const loadedCode = $("#credit-note-code").value.trim();
+  fillRegisteredClient(client);
+  $("#credit-amount").value = "0";
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  renderBuyerRequirement();
+  await refreshCreditAvailability();
+  if (loadedCode && state.availableCredit > 0) {
+    $("#credit-amount").value = Math.min(Number(state.availableCredit), cartTotals().total).toFixed(2);
+    renderTotals();
+  }
+}
+
+function fillRegisteredClient(client) {
   $("#client-rnc").value = formatFiscalId(client?.rnc_cedula || "");
   $("#client-name").value = client?.name || "";
   $("#client-phone").value = formatPhone(client?.phone || "");
   $("#client-email").value = client?.email || "";
   $("#client-address").value = client?.address || "";
-  renderBuyerRequirement();
+}
+
+function paymentRowsFromForm() {
+  const total = salePayableTotal();
+  const primaryMethod = $("#payment-method").value;
+  if (primaryMethod === "credito") return [];
+  if (!$("#split-payment-enabled").checked) {
+    return total > 0 ? [{ payment_method: primaryMethod, amount: Math.round(total * 100) / 100 }] : [];
+  }
+  const primaryAmount = Math.round(Number($("#primary-payment-amount").value || 0) * 100) / 100;
+  const secondaryMethod = $("#secondary-payment-method").value;
+  const secondaryAmount = Math.round((total - primaryAmount) * 100) / 100;
+  if (primaryMethod === secondaryMethod) throw new Error("Selecciona dos formas de pago diferentes.");
+  if (primaryAmount <= 0 || secondaryAmount <= 0) throw new Error("Cada forma de pago debe tener un monto mayor que cero.");
+  return [
+    { payment_method: primaryMethod, amount: primaryAmount },
+    { payment_method: secondaryMethod, amount: secondaryAmount },
+  ];
+}
+
+function renderSplitPayment(resetAmount = false) {
+  const enabled = Boolean($("#split-payment-enabled")?.checked);
+  const panel = $("#split-payment-panel");
+  if (!panel) return;
+  const hasCredit = effectiveCreditAmount() > 0;
+  $("#payment-method-label").textContent = hasCredit ? "Forma de pago del monto restante" : "Pago";
+  $("#split-payment-title").textContent = hasCredit ? "Dividir saldo restante" : "Pago con dos formas";
+  $("#split-payment-caption").textContent = hasCredit ? "Usar dos medios adicionales (opcional)" : "Dividir el monto a cobrar";
+  panel.hidden = !enabled;
+  $("#split-payment-enabled").disabled = $("#payment-method").value === "credito";
+  if ($("#payment-method").value === "credito" && enabled) {
+    $("#split-payment-enabled").checked = false;
+    panel.hidden = true;
+    return;
+  }
+  if (!enabled) return;
+  const total = salePayableTotal();
+  if (resetAmount || !Number($("#primary-payment-amount").value)) {
+    $("#primary-payment-amount").value = (Math.round(total * 50) / 100).toFixed(2);
+  }
+  const primary = Math.max(0, Math.min(total, Number($("#primary-payment-amount").value || 0)));
+  const remaining = Math.max(0, Math.round((total - primary) * 100) / 100);
+  $("#secondary-payment-amount").value = remaining.toFixed(2);
+  $("#split-payment-summary").textContent = `${paymentLabelFor($("#payment-method").value)} ${money.format(primary)} + ${paymentLabelFor($("#secondary-payment-method").value)} ${money.format(remaining)} = ${money.format(total)}`;
+  renderOnlinePaymentStatus();
+}
+
+function requestedCreditAmount() {
+  const amount = Number($("#credit-amount")?.value || 0);
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : 0;
+}
+
+function effectiveCreditAmount() {
+  return Math.min(requestedCreditAmount(), Number(state.availableCredit || 0), cartTotals().total);
+}
+
+function salePayableTotal() {
+  return Math.max(0, Math.round((cartTotals().total - effectiveCreditAmount()) * 100) / 100);
+}
+
+function resetCreditRedemption() {
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  if ($("#credit-note-code")) $("#credit-note-code").value = "";
+  if ($("#credit-amount")) $("#credit-amount").value = "0";
+  renderCreditAvailability();
+}
+
+function renderCreditAvailability() {
+  const box = $("#credit-availability");
+  const list = $("#available-credit-list");
+  if (!box) return;
+  const clientId = Number($("#client-select")?.value || 0);
+  const code = $("#credit-note-code")?.value.trim() || "";
+  box.className = `credit-availability ${state.availableCredit > 0 ? "available" : ""}`;
+  if (!clientId && code && state.availableCredit > 0) {
+    box.textContent = `Nota ${code} cargada · saldo ${money.format(state.availableCredit)}. Selecciona el cliente que presenta el vale.`;
+  } else if (!clientId && state.availableCreditNotes.length) {
+    box.textContent = `${state.availableCreditNotes.length} nota(s) vigente(s). Carga una para aplicarla; si es de Consumidor Final, selecciona quién presenta el vale.`;
+  } else if (!clientId) {
+    box.textContent = code ? `No encontramos una nota vigente con el e-NCF ${code}.` : "Consulta las notas vigentes o selecciona un cliente registrado.";
+  } else if (state.availableCredit > 0) {
+    const source = code ? `Vale ${code}` : `${state.availableCreditNotes.length} nota(s) aceptada(s)`;
+    box.textContent = `${source} · Saldo disponible: ${money.format(state.availableCredit)}.`;
+  } else {
+    box.textContent = code ? `El vale ${code} no existe, no está aceptado o ya fue consumido.` : "Este cliente no tiene notas de crédito disponibles.";
+  }
+  if (list) {
+    list.innerHTML = state.availableCreditNotes.map((note) => `
+      <article class="available-credit-item">
+        <div><strong>${escapeHtml(note.display_encf)}</strong><span>${escapeHtml(note.source_client_name || "Consumidor Final")} · vence ${escapeHtml(formatReceiptDate(note.expires_at))}</span></div>
+        <div class="available-credit-action"><strong>${money.format(note.available_amount)}</strong><button class="table-button" type="button" data-select-credit="${note.id}">Cargar nota</button></div>
+      </article>
+    `).join("");
+    list.querySelectorAll("[data-select-credit]").forEach((button) => button.addEventListener("click", () => {
+      const note = state.availableCreditNotes.find((item) => Number(item.id) === Number(button.dataset.selectCredit));
+      if (!note) return;
+      const sourceClient = state.clients.find((item) => Number(item.id) === Number(note.source_client_id));
+      if (sourceClient) {
+        $("#client-select").value = String(sourceClient.id);
+        fillRegisteredClient(sourceClient);
+        renderBuyerRequirement();
+      }
+      $("#credit-note-code").value = note.display_encf;
+      $("#credit-amount").value = Math.min(Number(note.available_amount), cartTotals().total).toFixed(2);
+      state.availableCredit = Number(note.available_amount);
+      state.availableCreditNotes = [note];
+      $("#split-payment-enabled").checked = false;
+      renderCreditAvailability();
+      renderTotals();
+      toast(sourceClient ? `Nota ${note.display_encf} cargada.` : `Nota ${note.display_encf} cargada. Selecciona el cliente que presenta el vale.`);
+    }));
+  }
+}
+
+async function refreshCreditAvailability(showMessage = false) {
+  const clientId = Number($("#client-select")?.value || 0);
+  state.availableCredit = 0;
+  state.availableCreditNotes = [];
+  const code = $("#credit-note-code").value.trim().toUpperCase();
+  const result = await api(`/api/credit-notes/available?client_id=${clientId}&code=${encodeURIComponent(code)}`);
+  state.availableCredit = Number(result.available_total || 0);
+  state.availableCreditNotes = result.credit_notes || [];
+  renderCreditAvailability();
+  renderTotals();
+  if (showMessage) {
+    toast(state.availableCredit > 0 ? `${state.availableCreditNotes.length} nota(s) vigente(s) encontrada(s).` : "No hay notas de crédito vigentes disponibles.", state.availableCredit <= 0);
+  }
+}
+
+function renderCreditPaymentPlan() {
+  const plan = $("#credit-payment-plan");
+  if (!plan) return;
+  const credit = effectiveCreditAmount();
+  const remaining = salePayableTotal();
+  plan.hidden = credit <= 0;
+  if (credit <= 0) return;
+  const remainder = remaining > 0
+    ? `<span>+</span><div><small>${escapeHtml(paymentLabelFor($("#payment-method").value))}</small><strong>${money.format(remaining)}</strong></div>`
+    : "";
+  plan.innerHTML = `<div><small>Nota de crédito</small><strong>${money.format(credit)}</strong></div>${remainder}<span>=</span><div><small>Total cubierto</small><strong>${money.format(credit + remaining)}</strong></div>`;
 }
 
 function selectedClientPayload() {
@@ -1017,6 +1512,7 @@ function bindInventory() {
 
 function bindReports() {
   $("#refresh-reports").addEventListener("click", refreshReports);
+  $("#run-management-report")?.addEventListener("click", refreshManagementReport);
   $("#test-imecf").addEventListener("click", testImecfConnection);
   $("#open-e34-center").addEventListener("click", () => {
     setView("fiscal");
@@ -1026,11 +1522,19 @@ function bindReports() {
 
 function bindFiscal() {
   $("#refresh-fiscal").addEventListener("click", refreshFiscal);
+  $("#retry-integrations")?.addEventListener("click", async () => {
+    const result = await api("/api/integrations/retry", { method: "POST", body: "{}" });
+    toast(`Reintentos procesados: ${result.processed}. Completados: ${result.completed}.`, result.failed > 0);
+    await refreshFiscal();
+  });
   $("#fiscal-test-connection").addEventListener("click", testImecfConnection);
   $("#validate-fiscal-issuer").addEventListener("click", validateFiscalIssuer);
   $("#fiscal-sync-documents").addEventListener("click", syncFiscalDocuments);
   $("#fiscal-search").addEventListener("input", renderFiscalDocuments);
   $("#credit-note-form").addEventListener("submit", issueCreditNote);
+  $("#credit-source-invoice").addEventListener("change", loadCreditReturnItems);
+  $("#credit-status-filter").addEventListener("change", renderCreditNotes);
+  if (!$("#credit-expires-at").value) $("#credit-expires-at").value = defaultCreditExpiry();
   $("#fiscal-config-form").addEventListener("submit", saveFiscalCompany);
   $("#cancel-fiscal-config").addEventListener("click", resetFiscalCompanyForm);
   $$(".filter-button").forEach((button) => {
@@ -1185,11 +1689,13 @@ async function validateFiscalIssuer() {
 }
 
 async function refreshFiscal() {
-  const [payload, creditPayload] = await Promise.all([
+  const [payload, creditPayload, invoicePayload] = await Promise.all([
     api("/api/fiscal/dashboard"),
     api("/api/credit-notes"),
+    api("/api/invoices?page=1&limit=100"),
   ]);
   state.creditNotes = creditPayload.credit_notes || [];
+  state.invoices = invoicePayload.invoices || [];
   state.imecfConfigured = Boolean(payload.provider?.configured);
   state.imecfActive = Boolean(payload.provider?.active);
   state.fiscalDocuments = payload.documents || [];
@@ -1215,15 +1721,200 @@ async function refreshFiscal() {
 }
 
 function renderCreditNotes() {
-  const eligible = state.invoices.filter((invoice) => invoice.provider_encf && !state.creditNotes.some((note) => Number(note.source_invoice_id) === Number(invoice.id) && !normalize(note.api_status).includes("rechaz")));
+  const eligible = state.invoices.filter((invoice) => invoice.provider_encf);
   $("#credit-source-invoice").innerHTML = `<option value="">Selecciona una factura aceptada</option>${eligible.map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.provider_encf)} · ${escapeHtml(invoice.client_name)} · ${money.format(invoice.total)}</option>`).join("")}`;
-  $("#credit-note-list").innerHTML = state.creditNotes.map((note) => `
+  const filter = $("#credit-status-filter")?.value || "vigente";
+  const notes = state.creditNotes.filter((note) => filter === "todas" || note.credit_status === filter);
+  $("#credit-note-list").innerHTML = notes.map((note) => `
     <article class="credit-note-card">
-      <div class="document-title"><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span class="badge ${normalize(note.api_status).includes("acept") ? "ok" : note.api_error ? "low" : "warning"}">${escapeHtml(note.api_status || note.status)}</span></div>
+      <div class="document-title"><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span class="badge ${note.credit_status === "vigente" ? "ok" : note.credit_status === "rechazada" || note.credit_status === "vencida" ? "low" : "warning"}">${escapeHtml(note.credit_status || note.api_status || note.status)}</span></div>
       <p>Modifica ${escapeHtml(note.source_encf)} · ${money.format(note.total)}</p>
+      <p>Cliente: ${escapeHtml(note.source_client_name || "Consumidor Final")} · Saldo: ${money.format(note.available_amount || 0)}</p>
+      <p>Vigencia comercial hasta ${escapeHtml(formatReceiptDate(note.expires_at))}</p>
       <span>${escapeHtml(note.reason)}</span>
+      <div class="credit-card-actions"><button class="table-button" type="button" data-credit-voucher="${note.id}">Comprobante</button>${note.credit_status === "vigente" ? `<button class="table-button" type="button" data-use-credit="${note.id}">Usar en venta</button>` : ""}</div>
     </article>
-  `).join("") || `<div class="empty-state">Todavía no hay notas de crédito E34.</div>`;
+  `).join("") || `<div class="empty-state">No hay notas de crédito para este filtro.</div>`;
+  $("#credit-note-list").querySelectorAll("[data-credit-voucher]").forEach((button) => button.addEventListener("click", () => openCreditVoucher(Number(button.dataset.creditVoucher))));
+  $("#credit-note-list").querySelectorAll("[data-use-credit]").forEach((button) => button.addEventListener("click", () => {
+    const note = state.creditNotes.find((item) => Number(item.id) === Number(button.dataset.useCredit));
+    const client = state.clients.find((item) => normalize(item.name) === normalize(note?.source_client_name));
+    setView("sale");
+    if (client) { $("#client-select").value = client.id; selectRegisteredClient(); }
+    $("#credit-note-code").value = note?.provider_encf || note?.en_ncf || "";
+    $("#credit-amount").value = Number(note?.available_amount || 0).toFixed(2);
+    refreshCreditAvailability();
+  }));
+}
+
+function bindPurchases() {
+  $("#refresh-purchases")?.addEventListener("click", refreshPurchases);
+  $("#purchase-list")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-pay-purchase]"); if (!button) return;
+    const row = state.purchases.find((item) => Number(item.id) === Number(button.dataset.payPurchase));
+    const amount = Number(window.prompt(`Monto a pagar (balance ${money.format(row?.balance_due || 0)}):`, String(row?.balance_due || "")) || 0);
+    if (!amount) return;
+    const paymentMethod = (window.prompt("Forma de pago: transferencia, efectivo o tarjeta", "transferencia") || "transferencia").toLowerCase();
+    await api(`/api/purchases/${row.id}/payments`, { method: "POST", body: JSON.stringify({ amount, payment_method: paymentMethod }) });
+    toast("Pago al proveedor registrado."); await refreshPurchases();
+  });
+  $("#purchase-product")?.addEventListener("change", () => {
+    const product = state.products.find((item) => String(item.id) === $("#purchase-product").value);
+    if (product) $("#purchase-unit-cost").value = Number(product.cost || 0).toFixed(2);
+  });
+  $("#add-purchase-line")?.addEventListener("click", () => {
+    const product = state.products.find((item) => String(item.id) === $("#purchase-product").value);
+    const quantity = Number($("#purchase-quantity").value || 0), unitCost = Number($("#purchase-unit-cost").value || 0);
+    if (!product || quantity <= 0 || unitCost < 0) { toast("Selecciona un producto, cantidad y costo válidos.", true); return; }
+    const existing = state.purchaseDraft.find((item) => String(item.product_id) === String(product.id));
+    if (existing) { existing.quantity += quantity; existing.unit_cost = unitCost; }
+    else state.purchaseDraft.push({ product_id: product.id, name: product.name, quantity, unit_cost: unitCost, tax_rate: Number(product.tax_rate || 0) });
+    renderPurchaseDraft();
+  });
+  $("#purchase-draft")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-purchase]");
+    if (!button) return;
+    state.purchaseDraft = state.purchaseDraft.filter((item) => String(item.product_id) !== button.dataset.removePurchase);
+    renderPurchaseDraft();
+  });
+  $("#purchase-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!state.purchaseDraft.length) { toast("Agrega al menos un artículo a la compra.", true); return; }
+    await api("/api/purchases", { method: "POST", body: JSON.stringify({
+      supplier_id: Number($("#purchase-supplier").value), supplier_invoice_number: $("#purchase-supplier-invoice").value.trim(),
+      amount_paid: Number($("#purchase-paid").value || 0), payment_method: $("#purchase-payment-method").value,
+      notes: $("#purchase-notes").value.trim(), items: state.purchaseDraft,
+    }) });
+    state.purchaseDraft = []; $("#purchase-form").reset(); renderPurchaseDraft(); toast("Compra recibida e inventario actualizado."); await refreshPurchases();
+  });
+}
+
+function renderPurchaseDraft() {
+  const target = $("#purchase-draft"); if (!target) return;
+  target.innerHTML = state.purchaseDraft.map((item) => `<article><div><strong>${escapeHtml(item.name)}</strong><span>${Number(item.quantity).toLocaleString("es-DO")} × ${money.format(item.unit_cost)}</span></div><button class="table-button danger" type="button" data-remove-purchase="${escapeHtml(item.product_id)}">Quitar</button></article>`).join("") || `<div class="empty-state">Agrega los artículos recibidos.</div>`;
+}
+
+async function refreshPurchases() {
+  const [productsPayload, suppliersPayload, purchasesPayload] = await Promise.all([
+    api("/api/products?page=1&limit=100"), api("/api/suppliers?page=1&limit=100"), api("/api/purchases"),
+  ]);
+  state.products = productsPayload.products || []; state.suppliers = suppliersPayload.suppliers || []; state.purchases = purchasesPayload.purchases || [];
+  $("#purchase-supplier").innerHTML = `<option value="">Selecciona un proveedor</option>${state.suppliers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#purchase-product").innerHTML = `<option value="">Selecciona un producto</option>${state.products.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.sku)} · ${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#purchase-list").innerHTML = state.purchases.map((item) => `<article><div><strong>${escapeHtml(item.order_number)} · ${escapeHtml(item.supplier_name)}</strong><span>${escapeHtml(formatReceiptDateTime(item.received_at || item.ordered_at))} · Factura ${escapeHtml(item.supplier_invoice_number || "s/n")}</span></div><div><strong>${money.format(item.total)}</strong><span>Balance ${money.format(item.balance_due)}</span>${Number(item.balance_due || 0) > 0 ? `<button class="table-button" data-pay-purchase="${item.id}">Registrar pago</button>` : ""}</div></article>`).join("") || `<div class="empty-state">Todavía no hay compras registradas.</div>`;
+  renderPurchaseDraft();
+}
+
+function bindReceivables() {
+  $("#refresh-receivables")?.addEventListener("click", refreshReceivables);
+  $("#receivable-list")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-collect-receivable]"); if (!button) return;
+    const row = state.receivables.find((item) => Number(item.id) === Number(button.dataset.collectReceivable));
+    const amount = Number(window.prompt(`Monto a cobrar (balance ${money.format(row?.balance || 0)}):`, String(row?.balance || "")) || 0);
+    if (!amount) return;
+    const paymentMethod = (window.prompt("Forma de pago: efectivo, tarjeta o transferencia", "efectivo") || "efectivo").toLowerCase();
+    await api(`/api/receivables/${row.id}/payments`, { method: "POST", body: JSON.stringify({ amount, payment_method: paymentMethod }) });
+    toast("Cobro registrado correctamente."); await refreshReceivables();
+  });
+}
+
+async function refreshReceivables() {
+  const payload = await api("/api/receivables"); state.receivables = payload.receivables || [];
+  $("#receivable-list").innerHTML = state.receivables.map((item) => `<article><div><strong>${escapeHtml(item.client_name)} · ${escapeHtml(item.en_ncf)}</strong><span>Vence ${escapeHtml(formatReceiptDate(item.due_date))} · ${escapeHtml(item.status)}</span></div><div><strong>${money.format(item.balance)}</strong>${item.status !== "pagada" ? `<button class="table-button" data-collect-receivable="${item.id}">Registrar cobro</button>` : ""}</div></article>`).join("") || `<div class="empty-state">No hay cuentas por cobrar.</div>`;
+}
+
+function bindReturns() {
+  $("#return-source-invoice")?.addEventListener("change", loadReturnModuleItems);
+  $("#return-create-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const items = Array.from($$("#return-create-items [data-return-module-product]:checked")).map((checkbox) => ({ product_id: checkbox.dataset.returnModuleProduct, quantity: Number($(`#return-create-items [data-return-module-quantity="${CSS.escape(checkbox.dataset.returnModuleProduct)}"]`).value || 0) }));
+    if (!items.length) { toast("Selecciona al menos un artículo.", true); return; }
+    const result = await api("/api/credit-notes", { method: "POST", body: JSON.stringify({
+      source_invoice_id: Number($("#return-source-invoice").value), modification_code: "1",
+      reason: $("#return-reason").value.trim(), expires_at: $("#return-expires-at").value,
+      restock: $("#return-restock").checked, items,
+    }) });
+    toast(result.imecf_warning || "Devolución y nota de crédito registradas.", Boolean(result.imecf_warning));
+    $("#return-create-form").reset(); $("#return-expires-at").value = defaultCreditExpiry(); await refreshReturns();
+  });
+}
+async function loadReturnModuleItems() {
+  const invoiceId = Number($("#return-source-invoice")?.value || 0); state.returnSourceItems = [];
+  if (!invoiceId) { $("#return-create-items").innerHTML = `<div class="empty-state">Selecciona una factura.</div>`; return; }
+  const payload = await api(`/api/invoices/${invoiceId}`); state.returnSourceItems = payload.invoice?.items || [];
+  $("#return-create-items").innerHTML = state.returnSourceItems.map((item) => `<label class="credit-return-row"><input type="checkbox" data-return-module-product="${escapeHtml(item.product_id)}" checked /><span>${escapeHtml(item.name)}</span><input class="input" data-return-module-quantity="${escapeHtml(item.product_id)}" type="number" min="0.01" max="${Number(item.quantity)}" step="0.01" value="${Number(item.quantity)}" /><small>de ${Number(item.quantity).toLocaleString("es-DO")}</small></label>`).join("");
+}
+async function refreshReturns() {
+  const [payload, invoicesPayload] = await Promise.all([api("/api/credit-notes"), api("/api/invoices?page=1&limit=100")]); state.creditNotes = payload.credit_notes || []; state.invoices = invoicesPayload.invoices || [];
+  $("#return-source-invoice").innerHTML = `<option value="">Selecciona una factura aceptada</option>${state.invoices.filter((invoice) => invoice.provider_encf).map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.provider_encf)} · ${escapeHtml(invoice.client_name || "Consumidor final")} · ${money.format(invoice.total)}</option>`).join("")}`;
+  if (!$("#return-expires-at").value) $("#return-expires-at").value = defaultCreditExpiry();
+  $("#return-note-list").innerHTML = state.creditNotes.map((note) => `<article><div><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span>${escapeHtml(note.source_client_name || "Consumidor final")} · ${escapeHtml(note.credit_status || note.status)}</span></div><div><strong>${money.format(note.available_amount || 0)}</strong><span>Saldo disponible</span></div></article>`).join("") || `<div class="empty-state">No hay notas de crédito emitidas.</div>`;
+}
+
+async function loadCreditReturnItems() {
+  const invoiceId = Number($("#credit-source-invoice")?.value || 0);
+  state.creditSourceItems = [];
+  if (!invoiceId) { $("#credit-return-items").innerHTML = `<div class="empty-state">Selecciona la factura original.</div>`; return; }
+  const payload = await api(`/api/invoices/${invoiceId}`);
+  state.creditSourceItems = payload.invoice?.items || [];
+  $("#credit-return-items").innerHTML = state.creditSourceItems.map((item) => `<label class="credit-return-row"><input type="checkbox" data-return-product="${escapeHtml(item.product_id)}" checked /><span>${escapeHtml(item.name)}</span><input class="input" data-return-quantity="${escapeHtml(item.product_id)}" type="number" min="0.01" max="${Number(item.quantity)}" step="0.01" value="${Number(item.quantity)}" /><small>de ${Number(item.quantity).toLocaleString("es-DO")}</small></label>`).join("");
+}
+
+function bindCash() {
+  $("#refresh-cash")?.addEventListener("click", refreshCash);
+  $("#cash-open-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await api("/api/cash-register/open", { method: "POST", body: JSON.stringify({ terminal_name: $("#cash-terminal-name").value.trim() || "Principal", opening_amount: Number($("#cash-opening-amount").value || 0), notes: $("#cash-opening-notes").value.trim() }) });
+    $("#cash-open-form").reset();
+    toast("Caja abierta correctamente.");
+    await refreshCash();
+  });
+  $("#cash-movement-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await api("/api/cash-register/movement", { method: "POST", body: JSON.stringify({ movement_type: $("#cash-movement-type").value, amount: Number($("#cash-movement-amount").value || 0), description: $("#cash-movement-description").value.trim() }) });
+    $("#cash-movement-form").reset();
+    toast("Movimiento de caja registrado.");
+    await refreshCash();
+  });
+  $("#cash-close-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const result = await api("/api/cash-register/close", { method: "POST", body: JSON.stringify({ counted_cash: Number($("#cash-counted-amount").value || 0), notes: $("#cash-closing-notes").value.trim() }) });
+    const difference = Number(result.session?.difference || 0);
+    toast(`Caja cerrada. Diferencia: ${money.format(difference)}.`, Math.abs(difference) > 0.01);
+    $("#cash-close-form").reset();
+    await refreshCash();
+  });
+}
+
+async function refreshCash() {
+  if (!$("#cash-session-summary")) return;
+  const payload = await api("/api/cash-register");
+  state.cashSession = payload.session || { status: "sin_apertura" };
+  state.cashHistory = payload.history || [];
+  renderCash();
+}
+
+function renderCash() {
+  const session = state.cashSession || { status: "sin_apertura" };
+  const open = session.status === "abierta";
+  $("#cash-open-form").hidden = open;
+  $("#cash-close-form").hidden = !open;
+  $("#cash-movement-form").querySelectorAll("input, select, button").forEach((element) => { element.disabled = !open; });
+  $("#cash-action-title").textContent = open ? `Caja #${session.id} · ${session.terminal_name || "Principal"}` : "Abrir caja";
+  const metrics = open || session.status === "cerrada" ? [
+    ["Estado", open ? "Abierta" : "Cerrada"],
+    ["Fondo inicial", money.format(session.opening_amount || 0)],
+    ["Ventas en efectivo", money.format(session.cash_sales || 0)],
+    ["Efectivo esperado", money.format(session.expected_cash || 0)],
+    ["Comprobantes", session.invoice_count || 0],
+  ] : [["Estado", "Sin apertura"], ["Fondo inicial", money.format(0)], ["Ventas en efectivo", money.format(0)], ["Efectivo esperado", money.format(0)], ["Comprobantes", 0]];
+  $("#cash-session-summary").innerHTML = metrics.map(([label, value]) => `<article class="metric-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`).join("");
+  $("#cash-payment-breakdown").innerHTML = (session.payments || []).map((row) => `<article><strong>${escapeHtml(paymentLabelFor(row.payment_method))}</strong><span>${money.format(row.amount)}</span></article>`).join("") || `<div class="empty-state">Este turno todavía no tiene pagos registrados.</div>`;
+  $("#cash-movement-list").innerHTML = (session.movements || []).map((row) => `<article><strong>${row.movement_type === "entrada" ? "+" : "-"}${money.format(row.amount)} · ${escapeHtml(row.description)}</strong><span>${escapeHtml(row.user_name)} · ${escapeHtml(formatReceiptDateTime(row.created_at))}</span></article>`).join("") || `<div class="empty-state">Sin entradas o salidas manuales.</div>`;
+  $("#cash-history").innerHTML = state.cashHistory.map((row) => {
+    const difference = Number(row.difference || 0);
+    return `<article><strong>Caja #${row.id} · ${escapeHtml(row.status)}</strong><span>${escapeHtml(formatReceiptDateTime(row.opened_at))}${row.closed_at ? ` → ${escapeHtml(formatReceiptDateTime(row.closed_at))}` : ""}</span><span>Esperado ${money.format(row.expected_cash || 0)} · Contado ${row.counted_cash == null ? "Pendiente" : money.format(row.counted_cash)} · <b class="${difference < 0 ? "cash-difference-negative" : "cash-difference-positive"}">Diferencia ${money.format(difference)}</b></span></article>`;
+  }).join("") || `<div class="empty-state">Todavía no hay turnos de caja.</div>`;
 }
 
 async function issueCreditNote(event) {
@@ -1236,16 +1927,22 @@ async function issueCreditNote(event) {
   const button = $("#issue-credit-note");
   button.disabled = true;
   try {
+    const items = Array.from($$("#credit-return-items [data-return-product]:checked")).map((checkbox) => ({ product_id: checkbox.dataset.returnProduct, quantity: Number($(`#credit-return-items [data-return-quantity="${CSS.escape(checkbox.dataset.returnProduct)}"]`).value || 0) }));
+    if (!items.length) { toast("Selecciona al menos un artículo para devolver.", true); return; }
     const result = await api("/api/credit-notes", {
       method: "POST",
       body: JSON.stringify({
         source_invoice_id: sourceInvoiceId,
         modification_code: $("#credit-modification-code").value,
         reason: $("#credit-reason").value.trim(),
+        expires_at: $("#credit-expires-at").value,
+        items,
+        restock: $("#credit-restock").checked,
       }),
     });
     toast(result.imecf_warning || `E34 ${result.credit_note.provider_encf || result.credit_note.en_ncf} procesado.`, Boolean(result.imecf_warning));
     $("#credit-note-form").reset();
+    $("#credit-expires-at").value = defaultCreditExpiry();
     await refreshFiscal();
   } finally {
     button.disabled = false;
@@ -1322,7 +2019,8 @@ function renderFiscalDocuments() {
     || `<div class="empty-state">No hay documentos que coincidan con el filtro.</div>`;
   $("#fiscal-documents").querySelectorAll("[data-fiscal-action]").forEach((button) => {
     button.addEventListener("click", () => {
-      if (button.dataset.providerId) runRemoteFiscalAction(button);
+      if (button.dataset.fiscalAction === "detail") runRemoteFiscalLookup(button);
+      else if (button.dataset.providerId) runRemoteFiscalAction(button);
       else runFiscalAction(button);
     });
   });
@@ -1353,6 +2051,7 @@ function fiscalDocumentCard(invoice) {
   const status = invoice.api_error ? "Error IMECF" : invoice.api_status || "Documento local";
   const tone = invoice.api_error ? "low" : invoice.api_status ? "ok" : "";
   const providerActionId = invoice._remote || invoice._creditNote ? invoice.provider_document_id : "";
+  const liveDiagnostic = providerActionId ? state.imecfDiagnostics[providerActionId] || "" : "";
   const xmlHref = providerActionId ? `/api/imecf/documents/${providerActionId}/xml` : `/api/invoices/${invoice.id}/xml`;
   return `
     <article class="fiscal-document">
@@ -1373,12 +2072,18 @@ function fiscalDocumentCard(invoice) {
         ${invoice.reason ? `<p class="document-track">Motivo: ${escapeHtml(invoice.reason)}</p>` : ""}
         ${invoice.track_id ? `<p class="document-track">TrackId: ${escapeHtml(invoice.track_id)}</p>` : ""}
         ${invoice.api_error ? `<p class="notice-error">${escapeHtml(invoice.api_error)}</p>` : ""}
+        ${liveDiagnostic ? `<p class="notice-error">Detalle IMECF: ${escapeHtml(liveDiagnostic)}</p>` : ""}
       </div>
       <div class="document-actions">
         <a class="table-button" href="${xmlHref}" target="_blank" rel="noreferrer">XML</a>
         ${invoice.provider_document_id ? `
           <button class="table-button" data-fiscal-action="status" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Consultar estado</button>
-          <button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Consultar DGII</button>
+          <button class="table-button" data-fiscal-action="detail" data-provider-id="${providerActionId}" data-encf="${escapeHtml(encf)}">Ver detalle</button>
+          ${invoice.dgii_url
+            ? `<a class="table-button" href="${escapeHtml(invoice.dgii_url)}" target="_blank" rel="noreferrer">DGII TesteCF</a>`
+            : invoice.track_id
+              ? `<button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id || ""}" data-provider-id="${providerActionId}">Rastrear</button>`
+              : `<span class="muted-text">Sin trackId; usa Estado</span>`}
         ` : `<span class="muted-text">Pendiente de enlace IMECF</span>`}
       </div>
     </article>
@@ -1419,6 +2124,7 @@ function normalizeRemoteDocument(document) {
     api_status: document.estado || document.status || "Remoto",
     api_error: document.errorMessage || "",
     track_id: document.trackId || "",
+    dgii_url: document.dgiiUrl || document.dgii_url || "",
     issued_at: document.createdAt || document.fechaEmision || "",
   };
 }
@@ -1431,12 +2137,84 @@ async function runRemoteFiscalAction(button) {
   button.textContent = "...";
   try {
     const result = await api(`/api/imecf/documents/${providerId}/${action}`);
-    toast(`IMECF: ${result.estado || result.status || "consulta completada"}`);
+    const status = result.estado || result.status || "consulta completada";
+    const diagnostic = imecfDiagnostic(result);
+    const rejected = normalize(status).includes("rechaz") || Boolean(diagnostic);
+    const summary = `${status}${diagnostic ? ` · ${diagnostic}` : ""}`;
+    state.imecfDiagnostics[providerId] = summary;
+    toast(`IMECF: ${summary}`, rejected);
     await syncFiscalDocuments();
+    renderFiscalDocuments();
   } finally {
     button.disabled = false;
     button.textContent = label;
   }
+}
+
+function defaultCreditExpiry() {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 90);
+  return expiry.toISOString().slice(0, 10);
+}
+
+async function openCreditVoucher(noteId) {
+  const payload = await api(`/api/credit-notes/${noteId}`);
+  const note = payload.credit_note;
+  const encf = note.provider_encf || note.en_ncf;
+  $("#dialog-eyebrow").textContent = "Comprobante de nota de crédito";
+  $("#dialog-ncf").textContent = encf;
+  $("#xml-link").hidden = !note.provider_document_id;
+  if (note.provider_document_id) $("#xml-link").href = `/api/imecf/documents/${encodeURIComponent(note.provider_document_id)}/xml`;
+  $("#issue-dialog-preinvoice").hidden = true;
+  $("#invoice-preview").innerHTML = `
+    <section class="aux-receipt credit-voucher">
+      <header class="aux-fiscal-header"><div class="aux-issuer-card"><img class="aux-company-logo" src="/static/logo-ahg.png" alt="AHG Construferret" /><div><h3>AHG CONSTRUFERRET</h3><strong>${escapeHtml(state.fiscalIssuer.name || "")}</strong><br /><strong>RNC:</strong> ${escapeHtml(formatFiscalId(state.fiscalIssuer.rnc || ""))}<br /><strong>Fecha de emisión:</strong> ${escapeHtml(formatReceiptDate(note.issued_at))}</div></div><div class="aux-document-card"><h4>Nota de Crédito Electrónica</h4><strong>e-NCF:</strong> ${escapeHtml(encf)}<br /><strong>Estado:</strong> ${escapeHtml(note.api_status || note.status)}</div></header>
+      <section class="aux-buyer-card"><strong>Cliente:</strong> ${escapeHtml(note.client_name || "Consumidor Final")}<br /><strong>RNC/Cédula:</strong> ${escapeHtml(formatFiscalId(note.rnc_cedula || "")) || "No identificado"}</section>
+      <div class="credit-voucher-meta"><div><span>Comprobante afectado</span><strong>${escapeHtml(note.source_encf)}</strong></div><div><span>Motivo</span><strong>${escapeHtml(note.reason)}</strong></div><div><span>Monto original del crédito</span><strong>${money.format(note.total)}</strong></div><div><span>Saldo disponible</span><strong>${money.format(note.available_amount)}</strong></div><div><span>Vigencia comercial</span><strong>${escapeHtml(formatReceiptDate(note.expires_at))}</strong></div><div><span>Aplicado</span><strong>${money.format(note.applied_amount || 0)}</strong></div></div>
+      <p class="section-copy">La vigencia mostrada controla el canje del saldo en este POS. La secuencia fiscal E34 no lleva fecha de vencimiento ante la DGII.</p>
+      <footer class="aux-fiscal-footer">Sin validez fiscal.</footer>
+    </section>`;
+  const dialog = $("#invoice-dialog");
+  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", "open");
+}
+
+async function runRemoteFiscalLookup(button) {
+  const providerId = button.dataset.providerId;
+  const encf = button.dataset.encf;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "...";
+  try {
+    const result = await api(`/api/imecf/by-encf/${encodeURIComponent(encf)}`);
+    const status = result.estado || result.status || "detalle consultado";
+    const diagnostic = imecfDiagnostic(result);
+    const summary = `${status}${diagnostic ? ` · ${diagnostic}` : ""}`;
+    state.imecfDiagnostics[providerId] = summary;
+    toast(`IMECF: ${summary}`, normalize(status).includes("rechaz"));
+    renderFiscalDocuments();
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+function imecfDiagnostic(result) {
+  const messages = [];
+  const diagnosticKey = /(error|mensaje|message|detail|detalle|motivo|razon|rechaz|validacion|validation|descripcion)/i;
+  function visit(value, key = "", depth = 0) {
+    if (depth > 6 || value == null) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key, depth + 1));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value).forEach(([childKey, child]) => visit(child, childKey, depth + 1));
+      return;
+    }
+    if (diagnosticKey.test(key) && String(value).trim()) messages.push(String(value).trim());
+  }
+  visit(result);
+  return [...new Set(messages)].join(" · ").slice(0, 600);
 }
 
 async function testImecfConnection() {
@@ -1473,7 +2251,30 @@ async function refreshProducts(page = 1) {
 }
 
 async function refreshReports() {
-  await refreshInvoicePage(1);
+  await Promise.all([refreshInvoicePage(1), refreshManagementReport()]);
+}
+
+async function refreshManagementReport() {
+  if (!$("#management-report-totals")) return;
+  const today = new Date();
+  const startDefault = new Date(today); startDefault.setDate(today.getDate() - 29);
+  if (!$("#report-end").value) $("#report-end").value = today.toISOString().slice(0, 10);
+  if (!$("#report-start").value) $("#report-start").value = startDefault.toISOString().slice(0, 10);
+  const payload = await api(`/api/reports/management?start=${encodeURIComponent($("#report-start").value)}&end=${encodeURIComponent($("#report-end").value)}`);
+  state.managementReport = payload.report;
+  renderManagementReport();
+}
+
+function renderManagementReport() {
+  const report = state.managementReport || { totals: {}, payments: [], top_products: [] };
+  const totals = report.totals || {};
+  $("#management-report-totals").innerHTML = [
+    ["Ventas", money.format(totals.sales || 0)], ["Comprobantes", totals.invoice_count || 0],
+    ["Margen estimado", money.format(totals.estimated_margin || 0)], ["ITBIS", money.format(totals.tax || 0)],
+    ["Descuentos", money.format(totals.discounts || 0)], ["Notas de crédito", money.format(totals.credits || 0)],
+  ].map(([label, value]) => `<article class="summary-card"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></article>`).join("");
+  $("#management-payment-list").innerHTML = (report.payments || []).map((row) => `<article><strong>${escapeHtml(paymentLabelFor(row.payment_method))}</strong><span>${money.format(row.amount)}</span></article>`).join("") || `<div class="empty-state">Sin pagos en el período.</div>`;
+  $("#management-product-list").innerHTML = (report.top_products || []).slice(0, 5).map((row) => `<article><strong>${escapeHtml(row.name)}</strong><span>${Number(row.quantity || 0)} uds. · ${money.format(row.total)}</span></article>`).join("") || `<div class="empty-state">Sin ventas en el período.</div>`;
 }
 
 async function refreshInvoicePage(page = 1) {
@@ -1672,8 +2473,15 @@ function renderTotals() {
   $("#discount-total").textContent = money.format(totals.discountTotal);
   $("#tax").textContent = money.format(totals.tax);
   $("#total").textContent = money.format(totals.total);
+  const credit = effectiveCreditAmount();
+  $("#credit-applied").textContent = `-${money.format(credit)}`;
+  $("#credit-applied-row").hidden = credit <= 0;
+  $("#amount-due").textContent = money.format(Math.max(0, totals.total - credit));
+  $("#amount-due-row").hidden = credit <= 0;
+  renderCreditPaymentPlan();
   renderBuyerRequirement();
-  renderOnlinePaymentStatus();
+  renderSplitPayment();
+  if (!$("#split-payment-enabled")?.checked) renderOnlinePaymentStatus();
 }
 
 async function issueInvoice() {
@@ -1693,10 +2501,44 @@ async function issueInvoice() {
     return;
   }
   const paymentMethod = $("#payment-method").value;
-  if (["tarjeta", "paypal"].includes(paymentMethod)) {
+  const requestedCredit = requestedCreditAmount();
+  if (requestedCredit > 0) {
+    if (!client.id) {
+      toast("Selecciona un cliente registrado para aplicar la nota de crédito.", true);
+      return;
+    }
+    await refreshCreditAvailability();
+    if (requestedCredit > Number(state.availableCredit || 0) + 0.001) {
+      toast(`Crédito insuficiente. Disponible: ${money.format(state.availableCredit)}.`, true);
+      return;
+    }
+    if (requestedCredit > total + 0.001) {
+      toast("El crédito no puede superar el total de la venta.", true);
+      return;
+    }
+    if (paymentMethod === "credito" && requestedCredit < total - 0.001) {
+      toast("Selecciona una forma de pago inmediata para el monto restante.", true);
+      return;
+    }
+  }
+  const payableTotal = Math.max(0, Math.round((total - requestedCredit) * 100) / 100);
+  let payments = [];
+  try {
+    payments = paymentRowsFromForm();
+  } catch (exception) {
+    toast(exception.message, true);
+    return;
+  }
+  const onlineRows = payments.filter((row) => ["tarjeta", "paypal"].includes(row.payment_method));
+  if (onlineRows.length > 1) {
+    toast("Usa solo una forma electrónica por venta mixta.", true);
+    return;
+  }
+  if (onlineRows.length === 1) {
+    const onlinePayment = onlineRows[0];
     const paidTotal = Number(state.paypalPayment?.amount_dop || 0);
-    if (state.paypalPayment?.method !== paymentMethod || Math.abs(paidTotal - total) > 0.01) {
-      await openPaymentGateway(paymentMethod, total);
+    if (onlinePayment.amount > 0 && (state.paypalPayment?.method !== onlinePayment.payment_method || Math.abs(paidTotal - onlinePayment.amount) > 0.01)) {
+      await openPaymentGateway(onlinePayment.payment_method, onlinePayment.amount);
       return;
     }
   }
@@ -1704,7 +2546,13 @@ async function issueInvoice() {
     ecf_type: state.ecfType,
     client,
     payment_method: paymentMethod,
+    payments,
     general_discount_percent: cartTotals().generalDiscountPercent,
+    credit_amount: requestedCredit,
+    credit_note_code: $("#credit-note-code").value.trim().toUpperCase(),
+    due_date: $("#sale-due-date").value,
+    manager_identifier: $("#manager-identifier").value.trim(),
+    manager_password: $("#manager-password").value,
     items: state.cart.map((item) => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_percent: Number(item.discount_percent || 0) })),
   };
   const button = $("#issue-invoice");
@@ -1733,8 +2581,11 @@ async function issueInvoice() {
 function renderOnlinePaymentStatus() {
   const box = $("#online-payment-status");
   const button = $("#open-payment-gateway");
-  const method = $("#payment-method").value;
-  if (!["tarjeta", "paypal"].includes(method)) {
+  let online = null;
+  try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (_) { online = null; }
+  const method = online?.payment_method || "";
+  const payableTotal = Number(online?.amount || 0);
+  if (!online || payableTotal <= 0) {
     box.hidden = true;
     button.hidden = true;
     return;
@@ -1880,11 +2731,16 @@ async function finishIssuedInvoice(result) {
   state.paypalPayment = null;
   $("#sale-notes").value = "";
   $("#general-discount").value = "0";
+  $("#split-payment-enabled").checked = false;
+  $("#primary-payment-amount").value = "";
+  renderSplitPayment();
+  resetCreditRedemption();
   renderCart();
   renderOnlinePaymentStatus();
   await refreshProducts();
   await refreshPreinvoices();
   await refreshReports();
+  await refreshClients();
   await refreshFiscal();
   showInvoice(result.invoice, result.imecf_warning);
 }
@@ -2125,7 +2981,11 @@ function fiscalActions(invoice) {
   return `
     <div class="row-actions">
       <button class="table-button" data-fiscal-action="status" data-invoice-id="${invoice.id}">Estado</button>
-      <button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id}">DGII</button>
+      ${invoice.dgii_url
+        ? `<a class="table-button" href="${escapeHtml(invoice.dgii_url)}" target="_blank" rel="noreferrer">DGII TesteCF</a>`
+        : invoice.track_id
+          ? `<button class="table-button" data-fiscal-action="track" data-invoice-id="${invoice.id}">Rastrear</button>`
+          : `<span class="muted-text">Sin trackId</span>`}
       <button class="table-button" data-credit-source="${invoice.id}">E34</button>
     </div>
   `;
@@ -2172,105 +3032,102 @@ function auxiliaryInvoiceHtml(invoice, warning = "") {
   const issuer = state.fiscalIssuer || {};
   const encf = invoice.display_encf || invoice.en_ncf || "";
   const issueDate = formatReceiptDate(invoice.issued_at);
-  const authorizationDate = issueDate;
-  const qrData = [encf, issuer.rnc, invoice.rnc_cedula, Number(invoice.total || 0).toFixed(2), invoice.security_code].join("|");
+  const signatureDate = invoice.signed_at ? formatReceiptDateTime(invoice.signed_at) : "Pendiente";
   const items = invoice.items || [];
-  const paymentLabel = paymentLabelFor(invoice.payment_method);
-  const trackingUrl = invoice.tracking_token
-    ? `${window.location.origin}/api/public/tracking/${encodeURIComponent(invoice.tracking_token)}`
-    : "";
-  const statusLine = invoice.provider_document_id
-    ? `IMECF: ${escapeHtml(invoice.api_status || "Enviado")}`
-    : "Modo: Comprobante local";
+  const basePaymentLabel = paymentLabelFor(invoice.payment_method);
+  const creditApplied = Number(invoice.credit_applied || 0);
+  const paymentRows = invoice.payments || [];
+  const paymentLabel = paymentRows.length
+    ? paymentRows.map((row) => `${paymentLabelFor(row.payment_method)} ${money.format(row.amount)}`).join(" + ")
+    : creditApplied > 0
+    ? `${creditApplied >= Number(invoice.total || 0) ? "Nota de crédito" : `Nota de crédito + ${basePaymentLabel}`}`
+    : basePaymentLabel;
+  const qrHref = invoice.dgii_url || "";
+  const sequenceExpiry = invoice.sequence_expires_at ? formatReceiptDate(invoice.sequence_expires_at) : "Pendiente";
+  const fiscalIssuerName = invoice.provider_issuer_name || issuer.name || "UTESA";
+  const fiscalIssuerRnc = invoice.provider_issuer_rnc || issuer.rnc || "";
+  const fiscalIssuerAddress = invoice.provider_issuer_address || issuer.address || "";
+  const fiscalMunicipality = invoice.provider_issuer_municipality || issuer.municipality || "No disponible";
+  const fiscalProvince = invoice.provider_issuer_province || issuer.province || "No disponible";
+  const showBuyer = invoice.ecf_type === "31" || Number(invoice.total || 0) >= 250000 || Boolean(invoice.rnc_cedula);
+  const showExpiry = invoice.ecf_type === "31";
   return `
     <section class="aux-receipt">
-      <div class="aux-receipt-top">
-        <div class="aux-receipt-title">
-          <div class="aux-dgii">DGII</div>
-          <h3>Comprobante Auxiliar de Factura Electr&oacute;nica</h3>
+      <header class="aux-fiscal-header">
+        <div class="aux-issuer-card">
+          <img class="aux-company-logo" src="/static/logo-ahg.png" alt="AHG Construferret" />
+          <div>
+            <h3>AHG CONSTRUFERRET</h3>
+            <strong>${escapeHtml(fiscalIssuerName)}</strong><br />
+            <strong>Punto de emisi&oacute;n:</strong> ${escapeHtml(issuer.workspace_name || "Sucursal principal")}<br />
+            <strong>RNC:</strong> ${escapeHtml(formatFiscalId(fiscalIssuerRnc)) || "No disponible"}<br />
+            <strong>Direcci&oacute;n:</strong> ${escapeHtml(fiscalIssuerAddress) || "No disponible"}<br />
+            <strong>Municipio:</strong> ${escapeHtml(fiscalMunicipality)} &middot; <strong>Provincia:</strong> ${escapeHtml(fiscalProvince)}<br />
+            <strong>Fecha Emisi&oacute;n:</strong> ${escapeHtml(issueDate)}
+          </div>
+        </div>
+        <div class="aux-document-card">
           <h4>${escapeHtml(invoice.ecf_label || `e-CF ${invoice.ecf_type}`)}</h4>
+          <strong>e-NCF:</strong> ${escapeHtml(encf)}<br />
+          ${showExpiry ? `<strong>Fecha Vencimiento:</strong> ${escapeHtml(sequenceExpiry)}` : ""}
         </div>
-        <div class="aux-qr" aria-label="C&oacute;digo QR del comprobante">${fakeQrSvg(qrData)}</div>
-      </div>
+      </header>
 
-      <div class="aux-meta-grid">
-        <div>
-          <strong>Emisor:</strong><br />
-          RNC: ${escapeHtml(formatFiscalId(issuer.rnc || ""))}<br />
-          Raz&oacute;n Social: ${escapeHtml(issuer.name || "")}${issuer.workspace_name ? ` / ${escapeHtml(issuer.workspace_name)}` : ""}<br />
-          Direcci&oacute;n: ${escapeHtml(issuer.address || "")}
-        </div>
-        <div>
-          <strong>Tipo de Receptor:</strong> ${invoice.rnc_cedula ? "Contribuyente" : "Consumidor Final"}<br />
-          <strong>Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
-          <strong>RNC/C&eacute;dula/Pasaporte:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}<br />
-          <strong>Direcci&oacute;n:</strong> ${escapeHtml(invoice.address || "") || "No indicada"}
-        </div>
-      </div>
-
-      <div class="aux-access">
-        <div>
-          <strong>N&uacute;mero:</strong> ${escapeHtml(encf)}<br />
-          <strong>Fecha de Emisi&oacute;n:</strong> ${escapeHtml(issueDate)}<br />
-          <strong>Punto de Facturaci&oacute;n:</strong> ${escapeHtml(String(invoice.id || ""))}
-        </div>
-        <div>
-          Consulte por la clave de acceso en el portal DGII/IMECF<br />
-          <strong>CUFE:</strong> ${escapeHtml(invoice.track_id || invoice.security_code || encf)}<br />
-          Protocolo de autorizaci&oacute;n: ${escapeHtml(invoice.provider_document_id || "Pendiente")}, de ${escapeHtml(authorizationDate)}
-        </div>
-      </div>
+      ${showBuyer ? `
+        <section class="aux-buyer-card">
+          <strong>Raz&oacute;n Social Cliente:</strong> ${escapeHtml(invoice.client_name || "Consumidor Final")}<br />
+          <strong>RNC Cliente:</strong> ${escapeHtml(formatFiscalId(invoice.rnc_cedula || "")) || "No identificado"}
+        </section>
+      ` : `<div class="aux-section-divider" aria-hidden="true"></div>`}
 
       <table class="aux-items-table">
         <thead>
           <tr>
-            <th>No.</th>
-            <th>Descripci&oacute;n</th>
             <th>Cantidad</th>
-            <th>Unidad</th>
-            <th>Valor Unitario</th>
-            <th>Descuento Unitario</th>
-            <th>Monto</th>
+            <th>Descripci&oacute;n</th>
+            <th>Unidad de<br />Medida</th>
+            <th>Precio</th>
             <th>ITBIS</th>
-            <th>Valor Item</th>
+            <th>Valor</th>
           </tr>
         </thead>
         <tbody>
-          ${items.map((item, index) => auxiliaryItemRow(item, index)).join("") || `<tr><td colspan="9">Sin detalle</td></tr>`}
+          ${items.map((item, index) => auxiliaryItemRow(item, index)).join("") || `<tr><td colspan="6">Sin detalle</td></tr>`}
         </tbody>
       </table>
 
       <div class="aux-bottom-grid">
-        <table class="aux-tax-table">
-          <thead><tr><th colspan="3">Desglose ITBIS</th></tr></thead>
-          <tbody>
-            <tr><th>Monto Base</th><th>%</th><th>Impuesto</th></tr>
-            <tr><td>${plainMoney(invoice.subtotal)}</td><td>18</td><td>${plainMoney(invoice.tax)}</td></tr>
-            <tr><td>0.00</td><td>Exento</td><td>0.00</td></tr>
-            <tr><td>0.00</td><td>0</td><td>0.00</td></tr>
-            <tr><td colspan="2"><strong>Total</strong></td><td><strong>${plainMoney(invoice.tax)}</strong></td></tr>
-          </tbody>
-        </table>
+        <div class="aux-verification-block">
+          <div class="aux-qr-row">
+            ${qrHref ? `
+              <a class="aux-qr" href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer" aria-label="Consultar comprobante en DGII TesteCF">
+                <img src="/api/invoices/${encodeURIComponent(invoice.id)}/qr.svg" alt="QR oficial de consulta DGII TesteCF" />
+              </a>
+              <div class="aux-qr-copy">
+                <strong>C&oacute;digo de Seguridad:</strong> ${escapeHtml(invoice.security_code || "Pendiente")}<br />
+                <strong>Fecha Firma:</strong> ${escapeHtml(signatureDate)}<br />
+                <a class="aux-dgii-link" href="${escapeHtml(qrHref)}" target="_blank" rel="noreferrer">Consultar comprobante en DGII</a>
+              </div>
+            ` : `
+              <div class="aux-qr-unavailable">QR DGII pendiente</div>
+              <span>El proveedor todav&iacute;a no devolvi&oacute; una URL oficial de TESTeCF. No se genera un QR ficticio ni un c&oacute;digo de seguridad oficial.</span>
+            `}
+          </div>
+        </div>
 
         <div class="aux-total-stack">
-          ${auxTotalRow("Valor Total", invoice.subtotal)}
-          ${auxTotalRow("Total Neto", invoice.subtotal)}
-          ${auxTotalRow("Monto Exento ITBIS", 0)}
-          ${auxTotalRow("Monto Gravado ITBIS", invoice.subtotal)}
-          ${auxTotalRow("ITBIS", invoice.tax)}
-          ${auxTotalRow("Total Impuesto", invoice.tax)}
+          ${auxTotalRow("Subtotal gravado", invoice.subtotal)}
+          ${auxTotalRow("Descuento aplicado", invoice.discount_total || 0)}
+          ${auxTotalRow("Total ITBIS", invoice.tax)}
           ${auxTotalRow("Total", invoice.total, true)}
-          <div class="aux-payment-gap"></div>
-          ${auxTotalRow("Forma de Pago", paymentLabel)}
-          ${auxTotalRow(paymentLabel, invoice.total)}
-          ${auxTotalRow("TOTAL PAGADO", invoice.total, true)}
-          ${auxTotalRow("Vuelto", 0)}
+          ${creditApplied > 0 ? auxTotalRow("Nota de crédito aplicada", -creditApplied) : ""}
+          ${creditApplied > 0 ? auxTotalRow("Monto cobrado", invoice.amount_due || 0, true) : ""}
+          <div class="aux-payment-summary"><span>Forma de pago</span><strong>${escapeHtml(paymentLabel)}</strong></div>
         </div>
       </div>
 
-      <div class="aux-status-line">${escapeHtml(statusLine)}</div>
-      ${trackingUrl ? `<div class="aux-status-line">Token de seguimiento: <a href="${escapeHtml(trackingUrl)}" target="_blank" rel="noreferrer">Consultar estado remoto</a></div>` : ""}
-      ${warning ? `<p class="notice-error aux-warning">${escapeHtml(warning)}</p>` : ""}
+      <footer class="aux-fiscal-footer">Sin validez fiscal.</footer>
+      ${warning ? `<p class="notice-error aux-warning"><strong>Motivo de rechazo:</strong> ${escapeHtml(warning)}</p>` : ""}
     </section>
   `;
 }
@@ -2281,18 +3138,17 @@ function auxiliaryItemRow(item, index) {
   const discount = Number(item.discount_amount || 0);
   const tax = Number(item.line_tax || 0);
   const subtotal = Number(item.line_subtotal || (quantity * unitPrice));
-  const total = Number(item.line_total || (subtotal - discount + tax));
+  const value = Math.max(0, subtotal - discount);
+  const exemptIndicator = Number(item.tax_rate || 0) === 0 ? "E " : "";
+  const discountNote = discount > 0 ? ` <small>(Desc. ${plainMoney(discount)})</small>` : "";
   return `
     <tr>
-      <td>${String(index + 1).padStart(4, "0")}</td>
-      <td>${escapeHtml(item.name || item.product_id || "Art?culo")}</td>
       <td>${formatQty(quantity)}</td>
+      <td>${exemptIndicator}${escapeHtml(item.name || item.product_id || "Articulo")}${discountNote}</td>
       <td>UND</td>
       <td>${plainMoney(unitPrice)}</td>
-      <td>${plainMoney(discount)}</td>
-      <td>${plainMoney(subtotal - discount)}</td>
       <td>${plainMoney(tax)}</td>
-      <td>${plainMoney(total)}</td>
+      <td>${plainMoney(value)}</td>
     </tr>
   `;
 }
@@ -2307,8 +3163,10 @@ function paymentLabelFor(method) {
     efectivo: "Efectivo",
     tarjeta: "Tarjeta",
     paypal: "PayPal",
-    transferencia: "Transf. / Dep?sito a cta. bancaria",
-    credito: "Cr?dito",
+    transferencia: "Transferencia / depósito bancario",
+    credito: "Crédito",
+    nota_credito: "Nota de crédito",
+    mixto: "Pago mixto",
   }[String(method || "").toLowerCase()] || "Efectivo";
 }
 
@@ -2317,49 +3175,28 @@ function plainMoney(value) {
 }
 
 function formatReceiptDate(value) {
+  const text = String(value || "");
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
   const date = new Date(value || Date.now());
   if (Number.isNaN(date.getTime())) return String(value || "");
   return date.toLocaleDateString("es-DO", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
-function fakeQrSvg(text) {
-  const size = 29;
-  const cell = 4;
-  const margin = 2;
-  let hash = 2166136261;
-  for (const char of String(text || "")) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  const isFinder = (x, y, ox, oy) => x >= ox && x < ox + 7 && y >= oy && y < oy + 7;
-  const finderDark = (x, y, ox, oy) => {
-    const dx = x - ox;
-    const dy = y - oy;
-    return dx === 0 || dy === 0 || dx === 6 || dy === 6 || (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4);
-  };
-  const rects = [];
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      let dark = false;
-      if (isFinder(x, y, 0, 0)) dark = finderDark(x, y, 0, 0);
-      else if (isFinder(x, y, size - 7, 0)) dark = finderDark(x, y, size - 7, 0);
-      else if (isFinder(x, y, 0, size - 7)) dark = finderDark(x, y, 0, size - 7);
-      else {
-        hash = Math.imul(hash ^ (x * 31 + y * 131), 1103515245) >>> 0;
-        dark = ((hash >>> ((x + y) % 16)) & 1) === 1;
-      }
-      if (dark) rects.push(`<rect x="${(x + margin) * cell}" y="${(y + margin) * cell}" width="${cell}" height="${cell}" />`);
-    }
-  }
-  const full = (size + margin * 2) * cell;
-  return `<svg viewBox="0 0 ${full} ${full}" role="img"><rect width="${full}" height="${full}" fill="#fff"/>${rects.join("")}</svg>`;
+function formatReceiptDateTime(value) {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toLocaleString("es-DO", { dateStyle: "short", timeStyle: "medium" });
 }
 
 function renderOnlinePaymentStatus() {
   const box = $("#online-payment-status");
   const button = $("#open-payment-gateway");
-  const method = $("#payment-method").value;
-  if (!["tarjeta", "paypal"].includes(method)) {
+  let online = null;
+  try { online = paymentRowsFromForm().find((row) => ["tarjeta", "paypal"].includes(row.payment_method)); } catch (_) { online = null; }
+  const method = online?.payment_method || "";
+  const payableTotal = Number(online?.amount || 0);
+  if (!online || payableTotal <= 0) {
     box.hidden = true;
     button.hidden = true;
     return;
@@ -2483,7 +3320,7 @@ async function openRealCardFields(paypal, createOrder, onApprove, onError) {
 }
 
 function confirmSimulatedPayment(method) {
-  const total = cartTotals().total;
+  const total = salePayableTotal();
   if (total <= 0) {
     toast("Agrega articulos con un total mayor que cero para cobrar.", true);
     return;

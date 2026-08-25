@@ -14,6 +14,47 @@ SESSION_COOKIE = "ahg_session"
 SESSION_TTL_HOURS = 12
 PASSWORD_KEY_LENGTH = 64
 
+ALL_MODULES = (
+    "sale",
+    "returns",
+    "products",
+    "clients",
+    "suppliers",
+    "purchases",
+    "receivables",
+    "preinvoices",
+    "assistant",
+    "inventory",
+    "fiscal",
+    "reports",
+    "cash",
+    "audit",
+    "admin",
+)
+
+ROLE_DEFAULT_MODULES = {
+    "admin": ALL_MODULES,
+    "gerente": tuple(module for module in ALL_MODULES if module != "admin"),
+    "cajero": ("sale", "returns", "clients", "preinvoices", "receivables", "reports", "cash"),
+    "vendedor": ("sale", "returns", "clients", "preinvoices", "receivables", "assistant", "reports"),
+    "almacen": ("products", "suppliers", "purchases", "inventory"),
+}
+
+
+def normalize_user_modules(value: Any, role: str) -> tuple[str, ...]:
+    if value is None or value == "":
+        return tuple(ROLE_DEFAULT_MODULES.get(role, ()))
+    if isinstance(value, str):
+        try:
+            import json
+
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            value = []
+    selected = set(value if isinstance(value, (list, tuple, set)) else [])
+    modules = tuple(module for module in ALL_MODULES if module in selected)
+    return ALL_MODULES if role == "admin" else modules
+
 
 @dataclass(frozen=True)
 class AuthUser:
@@ -22,6 +63,7 @@ class AuthUser:
     email: str
     phone: str
     role: str
+    modules: tuple[str, ...] = ()
 
     def public(self) -> dict[str, Any]:
         return {
@@ -30,7 +72,11 @@ class AuthUser:
             "email": self.email,
             "phone": self.phone,
             "role": self.role,
+            "modules": list(self.modules),
         }
+
+    def can_access(self, module: str) -> bool:
+        return module in self.modules
 
 
 def hash_password(password: str) -> str:
@@ -118,10 +164,16 @@ def clear_session_cookie(secure: bool = False) -> str:
     return "; ".join(attributes)
 
 
-def initial_admin_credentials() -> tuple[str, str, str, str]:
+def initial_admin_credentials(allow_defaults: bool = True) -> tuple[str, str, str, str]:
+    configured_password = os.getenv("AHG_ADMIN_PASSWORD", "")
+    configured_email = os.getenv("AHG_ADMIN_EMAIL", "")
+    if not allow_defaults and (not configured_password or not configured_email):
+        raise ValueError(
+            "Una base PostgreSQL nueva requiere AHG_ADMIN_EMAIL y AHG_ADMIN_PASSWORD."
+        )
     return (
         os.getenv("AHG_ADMIN_NAME", "Administrador AHG").strip(),
-        os.getenv("AHG_ADMIN_EMAIL", "admin@ahg.local").strip().lower(),
+        (configured_email or "admin@ahg.local").strip().lower(),
         "".join(ch for ch in os.getenv("AHG_ADMIN_PHONE", "8090000000") if ch.isdigit()),
-        os.getenv("AHG_ADMIN_PASSWORD", "Cambiar123!"),
+        configured_password or "Cambiar123!",
     )
