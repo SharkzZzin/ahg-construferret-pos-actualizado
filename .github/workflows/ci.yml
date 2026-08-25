@@ -10,6 +10,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      AHG_CREDENTIAL_SECRET: ci-only-credential-secret-32-characters-minimum
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
