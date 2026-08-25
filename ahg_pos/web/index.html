@@ -6,7 +6,7 @@
     <title>AHG CONSTRUFERRET POS</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="/static/styles.css?v=20260811-dashboard-v6" />
-    <link rel="stylesheet" href="/static/polish.css?v=20260811-email-v1" />
+    <link rel="stylesheet" href="/static/polish.css?v=20260824-business-v1" />
   </head>
   <body>
     <div id="loading-screen" class="loading-screen" aria-live="polite" aria-label="Cargando aplicación">
@@ -37,6 +37,9 @@
       <button class="tab" data-view="products">Maestro de artículos</button>
       <button class="tab" data-view="clients">Clientes</button>
       <button class="tab" data-view="suppliers">Proveedores</button>
+      <button class="tab" data-view="purchases">Compras</button>
+      <button class="tab" data-view="receivables">Cuentas por cobrar</button>
+      <button class="tab" data-view="returns">Devoluciones</button>
       <button class="tab" data-view="preinvoices">Pre-Facturas</button>
       <button class="tab" data-view="assistant">Asistente IA</button>
       <button class="tab" data-view="inventory">Inventario</button>
@@ -174,6 +177,11 @@
                 <label>Segunda forma<select id="secondary-payment-method" class="input"><option value="tarjeta">Tarjeta</option><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="paypal">PayPal</option></select></label>
                 <label>Monto restante<input id="secondary-payment-amount" class="input" type="number" readonly /></label>
                 <p id="split-payment-summary" class="field-help"></p>
+              </div>
+              <div class="form-grid business-control-grid">
+                <label>Vencimiento del crédito<input id="sale-due-date" class="input" type="date" /></label>
+                <label>Gerente autorizador<input id="manager-identifier" class="input" autocomplete="username" placeholder="Correo o teléfono" /></label>
+                <label>Clave de autorización<input id="manager-password" class="input" type="password" autocomplete="current-password" placeholder="Solo para descuentos o precios especiales" /></label>
               </div>
               <div id="credit-redemption" class="credit-redemption">
                 <div class="credit-redemption-head">
@@ -623,6 +631,8 @@
               </label>
               <label>Motivo<textarea id="credit-reason" class="input" maxlength="90" rows="3" required></textarea></label>
               <label>Vigencia comercial del saldo<input id="credit-expires-at" class="input" type="date" required /><small class="field-help">Esta fecha controla el uso del saldo en el POS; la secuencia E34 no vence ante DGII.</small></label>
+              <fieldset class="credit-return-lines"><legend>Artículos a devolver</legend><p class="field-help">Selecciona cantidades parciales o completas. El inventario se repone automáticamente.</p><div id="credit-return-items" class="credit-return-items"></div></fieldset>
+              <label><span><input id="credit-restock" type="checkbox" checked /> Reintegrar artículos al inventario</span></label>
               <button id="issue-credit-note" class="primary-button" type="submit">Emitir E34</button>
             </form>
             <div id="credit-note-list" class="credit-note-list"></div>
@@ -649,6 +659,43 @@
           </div>
           <div id="fiscal-documents" class="fiscal-document-list"></div>
         </section>
+      </section>
+
+      <section id="purchases" class="view">
+        <div class="dashboard-main-grid">
+          <section class="panel">
+            <div class="panel-head"><div><p class="eyebrow">Abastecimiento</p><h2>Recibir compra</h2></div></div>
+            <form id="purchase-form" class="stacked-form">
+              <label>Proveedor<select id="purchase-supplier" class="input" required></select></label>
+              <label>Factura del proveedor<input id="purchase-supplier-invoice" class="input" maxlength="80" /></label>
+              <div class="form-grid">
+                <label>Producto<select id="purchase-product" class="input"></select></label>
+                <label>Cantidad<input id="purchase-quantity" class="input" type="number" min="0.01" step="0.01" value="1" /></label>
+                <label>Costo unitario<input id="purchase-unit-cost" class="input" type="number" min="0" step="0.01" /></label>
+              </div>
+              <button id="add-purchase-line" class="secondary-button" type="button">Agregar artículo</button>
+              <div id="purchase-draft" class="compact-business-list"></div>
+              <div class="form-grid">
+                <label>Pago inicial<input id="purchase-paid" class="input" type="number" min="0" step="0.01" value="0" /></label>
+                <label>Forma de pago<select id="purchase-payment-method" class="input"><option value="transferencia">Transferencia</option><option value="efectivo">Efectivo</option><option value="tarjeta">Tarjeta</option><option value="credito">Crédito</option></select></label>
+              </div>
+              <label>Notas<textarea id="purchase-notes" class="input" rows="2"></textarea></label>
+              <button class="primary-button" type="submit">Recibir y actualizar inventario</button>
+            </form>
+          </section>
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Historial</p><h2>Compras recientes</h2></div><button id="refresh-purchases" class="secondary-button">Actualizar</button></div><div id="purchase-list" class="compact-business-list"></div></section>
+        </div>
+      </section>
+
+      <section id="receivables" class="view">
+        <section class="panel"><div class="panel-head"><div><p class="eyebrow">Crédito a clientes</p><h2>Cuentas por cobrar</h2></div><button id="refresh-receivables" class="secondary-button">Actualizar</button></div><div id="receivable-list" class="compact-business-list"></div></section>
+      </section>
+
+      <section id="returns" class="view">
+        <div class="dashboard-main-grid">
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Postventa</p><h2>Crear devolución</h2></div></div><form id="return-create-form" class="stacked-form"><label>Factura electrónica<select id="return-source-invoice" class="input" required></select></label><label>Motivo<textarea id="return-reason" class="input" minlength="5" maxlength="90" required></textarea></label><label>Vigencia del saldo<input id="return-expires-at" class="input" type="date" required /></label><fieldset class="credit-return-lines"><legend>Artículos</legend><div id="return-create-items" class="credit-return-items"></div></fieldset><label><span><input id="return-restock" type="checkbox" checked /> Reintegrar al inventario</span></label><button class="primary-button" type="submit">Emitir nota de crédito E34</button></form></section>
+          <section class="panel"><div class="panel-head"><div><p class="eyebrow">Saldos</p><h2>Notas emitidas</h2></div></div><p>Los créditos vigentes pueden cargarse directamente en el módulo Venta.</p><div id="return-note-list" class="compact-business-list"></div></section>
+        </div>
       </section>
     </main>
 
@@ -742,6 +789,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260811-hardening-v7"></script>
+    <script src="/static/app.js?v=20260824-business-v1"></script>
   </body>
 </html>

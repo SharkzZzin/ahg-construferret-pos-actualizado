@@ -38,6 +38,11 @@ const state = {
   dashboard: null,
   managementReport: null,
   userName: "",
+  purchaseDraft: [],
+  purchases: [],
+  receivables: [],
+  creditSourceItems: [],
+  returnSourceItems: [],
 };
 
 const MODULE_DEFINITIONS = [
@@ -45,6 +50,9 @@ const MODULE_DEFINITIONS = [
   ["products", "Maestro de artículos"],
   ["clients", "Clientes"],
   ["suppliers", "Proveedores"],
+  ["purchases", "Compras"],
+  ["receivables", "Cuentas por cobrar"],
+  ["returns", "Devoluciones"],
   ["preinvoices", "Pre-Facturas"],
   ["assistant", "Asistente IA"],
   ["inventory", "Inventario"],
@@ -58,9 +66,9 @@ const MODULE_DEFINITIONS = [
 const ROLE_DEFAULT_MODULES = {
   admin: MODULE_DEFINITIONS.map(([module]) => module),
   gerente: MODULE_DEFINITIONS.map(([module]) => module).filter((module) => module !== "admin"),
-  cajero: ["sale", "clients", "preinvoices", "reports", "cash"],
-  vendedor: ["sale", "clients", "preinvoices", "assistant", "reports"],
-  almacen: ["products", "suppliers", "inventory"],
+  cajero: ["sale", "clients", "preinvoices", "returns", "receivables", "reports", "cash"],
+  vendedor: ["sale", "clients", "preinvoices", "assistant", "returns", "receivables", "reports"],
+  almacen: ["products", "suppliers", "purchases", "inventory"],
 };
 
 const moduleLabel = (module) => module === "dashboard" ? "Inicio" : MODULE_DEFINITIONS.find(([key]) => key === module)?.[1] || module;
@@ -84,6 +92,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindProductMaster();
   bindClients();
   bindSuppliers();
+  bindPurchases();
+  bindReceivables();
+  bindReturns();
   bindPreinvoices();
   bindAssistant();
   bindWebRequests();
@@ -160,6 +171,9 @@ async function refreshViewData(view) {
   if (view === "products") await refreshProductMaster();
   if (view === "clients") await refreshClients();
   if (view === "suppliers") await refreshSuppliers();
+  if (view === "purchases") await refreshPurchases();
+  if (view === "receivables") await refreshReceivables();
+  if (view === "returns") await refreshReturns();
   if (view === "preinvoices") await refreshPreinvoices();
   if (view === "inventory") await refreshProducts();
   if (view === "reports") await refreshReports();
@@ -246,11 +260,14 @@ function renderDashboardStatus(payload) {
   const fiscal = payload.fiscal || {};
   const credits = payload.credits || {};
   const sales = payload.sales || {};
+  const pending = payload.pending || {};
   const rows = [
     ["ITBIS facturado", money.format(sales.tax || 0), "reports", "normal"],
     ["Descuentos aplicados", money.format(sales.discounts || 0), "reports", "normal"],
     ["Crédito aplicado", money.format(sales.credit_applied || 0), "sale", "normal"],
     ["Notas vigentes", `${credits.count || 0} · ${money.format(credits.available_total || 0)}`, "sale", Number(credits.count || 0) ? "attention" : "normal"],
+    ["Cuentas por cobrar", money.format(pending.receivables_due || 0), "receivables", Number(pending.receivables_due || 0) ? "attention" : "normal"],
+    ["Cuentas por pagar", money.format(pending.payables_due || 0), "purchases", Number(pending.payables_due || 0) ? "attention" : "normal"],
     ["e-CF aceptados hoy", String(fiscal.accepted_today || 0), "fiscal", "success"],
     ["e-CF por revisar", String(fiscal.attention_today || 0), "fiscal", Number(fiscal.attention_today || 0) ? "danger" : "success"],
   ];
@@ -271,6 +288,8 @@ function renderDashboardQuickActions() {
     ["sale", "Nueva venta", "Crear una pre-factura o comprobante"],
     ["preinvoices", "Pre-facturas", "Revisar solicitudes pendientes"],
     ["inventory", "Inventario", "Consultar existencias y alertas"],
+    ["purchases", "Compras", "Recibir mercancía y pagar proveedores"],
+    ["receivables", "Cuentas por cobrar", "Registrar cobros de ventas a crédito"],
     ["cash", "Cuadre de caja", "Abrir, revisar o cerrar el turno"],
     ["fiscal", "Gestión fiscal", "Consultar estados y documentos"],
     ["admin", "Usuarios", "Administrar accesos por módulo"],
@@ -333,7 +352,7 @@ async function saveUser(event) {
 
 async function downloadBackup() {
   const status = $("#backup-status"), button = $("#download-backup"); button.disabled = true; status.hidden = true;
-  try { const response = await fetch("/api/admin/backup"); if (!response.ok) throw new Error((await response.json()).error || "No se pudo generar el backup."); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `ahg-pos-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url); status.textContent = "Backup descargado correctamente."; status.className = "client-validation ok"; status.hidden = false; } catch (exception) { status.textContent = exception.message; status.className = "client-validation error"; status.hidden = false; } finally { button.disabled = false; }
+  try { const currentPassword = window.prompt("Confirma tu contraseña de administrador para generar el respaldo:"); if (!currentPassword) throw new Error("Respaldo cancelado."); const response = await fetch("/api/admin/backup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_password: currentPassword }) }); if (!response.ok) throw new Error((await response.json()).error || "No se pudo generar el backup."); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `ahg-pos-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url); status.textContent = "Backup sanitizado descargado correctamente."; status.className = "client-validation ok"; status.hidden = false; } catch (exception) { status.textContent = exception.message; status.className = "client-validation error"; status.hidden = false; } finally { button.disabled = false; }
 }
 
 function bindAudit() {
@@ -1513,6 +1532,7 @@ function bindFiscal() {
   $("#fiscal-sync-documents").addEventListener("click", syncFiscalDocuments);
   $("#fiscal-search").addEventListener("input", renderFiscalDocuments);
   $("#credit-note-form").addEventListener("submit", issueCreditNote);
+  $("#credit-source-invoice").addEventListener("change", loadCreditReturnItems);
   $("#credit-status-filter").addEventListener("change", renderCreditNotes);
   if (!$("#credit-expires-at").value) $("#credit-expires-at").value = defaultCreditExpiry();
   $("#fiscal-config-form").addEventListener("submit", saveFiscalCompany);
@@ -1669,11 +1689,13 @@ async function validateFiscalIssuer() {
 }
 
 async function refreshFiscal() {
-  const [payload, creditPayload] = await Promise.all([
+  const [payload, creditPayload, invoicePayload] = await Promise.all([
     api("/api/fiscal/dashboard"),
     api("/api/credit-notes"),
+    api("/api/invoices?page=1&limit=100"),
   ]);
   state.creditNotes = creditPayload.credit_notes || [];
+  state.invoices = invoicePayload.invoices || [];
   state.imecfConfigured = Boolean(payload.provider?.configured);
   state.imecfActive = Boolean(payload.provider?.active);
   state.fiscalDocuments = payload.documents || [];
@@ -1699,7 +1721,7 @@ async function refreshFiscal() {
 }
 
 function renderCreditNotes() {
-  const eligible = state.invoices.filter((invoice) => invoice.provider_encf && !state.creditNotes.some((note) => Number(note.source_invoice_id) === Number(invoice.id) && !normalize(note.api_status).includes("rechaz")));
+  const eligible = state.invoices.filter((invoice) => invoice.provider_encf);
   $("#credit-source-invoice").innerHTML = `<option value="">Selecciona una factura aceptada</option>${eligible.map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.provider_encf)} · ${escapeHtml(invoice.client_name)} · ${money.format(invoice.total)}</option>`).join("")}`;
   const filter = $("#credit-status-filter")?.value || "vigente";
   const notes = state.creditNotes.filter((note) => filter === "todas" || note.credit_status === filter);
@@ -1723,6 +1745,119 @@ function renderCreditNotes() {
     $("#credit-amount").value = Number(note?.available_amount || 0).toFixed(2);
     refreshCreditAvailability();
   }));
+}
+
+function bindPurchases() {
+  $("#refresh-purchases")?.addEventListener("click", refreshPurchases);
+  $("#purchase-list")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-pay-purchase]"); if (!button) return;
+    const row = state.purchases.find((item) => Number(item.id) === Number(button.dataset.payPurchase));
+    const amount = Number(window.prompt(`Monto a pagar (balance ${money.format(row?.balance_due || 0)}):`, String(row?.balance_due || "")) || 0);
+    if (!amount) return;
+    const paymentMethod = (window.prompt("Forma de pago: transferencia, efectivo o tarjeta", "transferencia") || "transferencia").toLowerCase();
+    await api(`/api/purchases/${row.id}/payments`, { method: "POST", body: JSON.stringify({ amount, payment_method: paymentMethod }) });
+    toast("Pago al proveedor registrado."); await refreshPurchases();
+  });
+  $("#purchase-product")?.addEventListener("change", () => {
+    const product = state.products.find((item) => String(item.id) === $("#purchase-product").value);
+    if (product) $("#purchase-unit-cost").value = Number(product.cost || 0).toFixed(2);
+  });
+  $("#add-purchase-line")?.addEventListener("click", () => {
+    const product = state.products.find((item) => String(item.id) === $("#purchase-product").value);
+    const quantity = Number($("#purchase-quantity").value || 0), unitCost = Number($("#purchase-unit-cost").value || 0);
+    if (!product || quantity <= 0 || unitCost < 0) { toast("Selecciona un producto, cantidad y costo válidos.", true); return; }
+    const existing = state.purchaseDraft.find((item) => String(item.product_id) === String(product.id));
+    if (existing) { existing.quantity += quantity; existing.unit_cost = unitCost; }
+    else state.purchaseDraft.push({ product_id: product.id, name: product.name, quantity, unit_cost: unitCost, tax_rate: Number(product.tax_rate || 0) });
+    renderPurchaseDraft();
+  });
+  $("#purchase-draft")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-purchase]");
+    if (!button) return;
+    state.purchaseDraft = state.purchaseDraft.filter((item) => String(item.product_id) !== button.dataset.removePurchase);
+    renderPurchaseDraft();
+  });
+  $("#purchase-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!state.purchaseDraft.length) { toast("Agrega al menos un artículo a la compra.", true); return; }
+    await api("/api/purchases", { method: "POST", body: JSON.stringify({
+      supplier_id: Number($("#purchase-supplier").value), supplier_invoice_number: $("#purchase-supplier-invoice").value.trim(),
+      amount_paid: Number($("#purchase-paid").value || 0), payment_method: $("#purchase-payment-method").value,
+      notes: $("#purchase-notes").value.trim(), items: state.purchaseDraft,
+    }) });
+    state.purchaseDraft = []; $("#purchase-form").reset(); renderPurchaseDraft(); toast("Compra recibida e inventario actualizado."); await refreshPurchases();
+  });
+}
+
+function renderPurchaseDraft() {
+  const target = $("#purchase-draft"); if (!target) return;
+  target.innerHTML = state.purchaseDraft.map((item) => `<article><div><strong>${escapeHtml(item.name)}</strong><span>${Number(item.quantity).toLocaleString("es-DO")} × ${money.format(item.unit_cost)}</span></div><button class="table-button danger" type="button" data-remove-purchase="${escapeHtml(item.product_id)}">Quitar</button></article>`).join("") || `<div class="empty-state">Agrega los artículos recibidos.</div>`;
+}
+
+async function refreshPurchases() {
+  const [productsPayload, suppliersPayload, purchasesPayload] = await Promise.all([
+    api("/api/products?page=1&limit=100"), api("/api/suppliers?page=1&limit=100"), api("/api/purchases"),
+  ]);
+  state.products = productsPayload.products || []; state.suppliers = suppliersPayload.suppliers || []; state.purchases = purchasesPayload.purchases || [];
+  $("#purchase-supplier").innerHTML = `<option value="">Selecciona un proveedor</option>${state.suppliers.map((item) => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#purchase-product").innerHTML = `<option value="">Selecciona un producto</option>${state.products.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.sku)} · ${escapeHtml(item.name)}</option>`).join("")}`;
+  $("#purchase-list").innerHTML = state.purchases.map((item) => `<article><div><strong>${escapeHtml(item.order_number)} · ${escapeHtml(item.supplier_name)}</strong><span>${escapeHtml(formatReceiptDateTime(item.received_at || item.ordered_at))} · Factura ${escapeHtml(item.supplier_invoice_number || "s/n")}</span></div><div><strong>${money.format(item.total)}</strong><span>Balance ${money.format(item.balance_due)}</span>${Number(item.balance_due || 0) > 0 ? `<button class="table-button" data-pay-purchase="${item.id}">Registrar pago</button>` : ""}</div></article>`).join("") || `<div class="empty-state">Todavía no hay compras registradas.</div>`;
+  renderPurchaseDraft();
+}
+
+function bindReceivables() {
+  $("#refresh-receivables")?.addEventListener("click", refreshReceivables);
+  $("#receivable-list")?.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-collect-receivable]"); if (!button) return;
+    const row = state.receivables.find((item) => Number(item.id) === Number(button.dataset.collectReceivable));
+    const amount = Number(window.prompt(`Monto a cobrar (balance ${money.format(row?.balance || 0)}):`, String(row?.balance || "")) || 0);
+    if (!amount) return;
+    const paymentMethod = (window.prompt("Forma de pago: efectivo, tarjeta o transferencia", "efectivo") || "efectivo").toLowerCase();
+    await api(`/api/receivables/${row.id}/payments`, { method: "POST", body: JSON.stringify({ amount, payment_method: paymentMethod }) });
+    toast("Cobro registrado correctamente."); await refreshReceivables();
+  });
+}
+
+async function refreshReceivables() {
+  const payload = await api("/api/receivables"); state.receivables = payload.receivables || [];
+  $("#receivable-list").innerHTML = state.receivables.map((item) => `<article><div><strong>${escapeHtml(item.client_name)} · ${escapeHtml(item.en_ncf)}</strong><span>Vence ${escapeHtml(formatReceiptDate(item.due_date))} · ${escapeHtml(item.status)}</span></div><div><strong>${money.format(item.balance)}</strong>${item.status !== "pagada" ? `<button class="table-button" data-collect-receivable="${item.id}">Registrar cobro</button>` : ""}</div></article>`).join("") || `<div class="empty-state">No hay cuentas por cobrar.</div>`;
+}
+
+function bindReturns() {
+  $("#return-source-invoice")?.addEventListener("change", loadReturnModuleItems);
+  $("#return-create-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const items = Array.from($$("#return-create-items [data-return-module-product]:checked")).map((checkbox) => ({ product_id: checkbox.dataset.returnModuleProduct, quantity: Number($(`#return-create-items [data-return-module-quantity="${CSS.escape(checkbox.dataset.returnModuleProduct)}"]`).value || 0) }));
+    if (!items.length) { toast("Selecciona al menos un artículo.", true); return; }
+    const result = await api("/api/credit-notes", { method: "POST", body: JSON.stringify({
+      source_invoice_id: Number($("#return-source-invoice").value), modification_code: "1",
+      reason: $("#return-reason").value.trim(), expires_at: $("#return-expires-at").value,
+      restock: $("#return-restock").checked, items,
+    }) });
+    toast(result.imecf_warning || "Devolución y nota de crédito registradas.", Boolean(result.imecf_warning));
+    $("#return-create-form").reset(); $("#return-expires-at").value = defaultCreditExpiry(); await refreshReturns();
+  });
+}
+async function loadReturnModuleItems() {
+  const invoiceId = Number($("#return-source-invoice")?.value || 0); state.returnSourceItems = [];
+  if (!invoiceId) { $("#return-create-items").innerHTML = `<div class="empty-state">Selecciona una factura.</div>`; return; }
+  const payload = await api(`/api/invoices/${invoiceId}`); state.returnSourceItems = payload.invoice?.items || [];
+  $("#return-create-items").innerHTML = state.returnSourceItems.map((item) => `<label class="credit-return-row"><input type="checkbox" data-return-module-product="${escapeHtml(item.product_id)}" checked /><span>${escapeHtml(item.name)}</span><input class="input" data-return-module-quantity="${escapeHtml(item.product_id)}" type="number" min="0.01" max="${Number(item.quantity)}" step="0.01" value="${Number(item.quantity)}" /><small>de ${Number(item.quantity).toLocaleString("es-DO")}</small></label>`).join("");
+}
+async function refreshReturns() {
+  const [payload, invoicesPayload] = await Promise.all([api("/api/credit-notes"), api("/api/invoices?page=1&limit=100")]); state.creditNotes = payload.credit_notes || []; state.invoices = invoicesPayload.invoices || [];
+  $("#return-source-invoice").innerHTML = `<option value="">Selecciona una factura aceptada</option>${state.invoices.filter((invoice) => invoice.provider_encf).map((invoice) => `<option value="${invoice.id}">${escapeHtml(invoice.provider_encf)} · ${escapeHtml(invoice.client_name || "Consumidor final")} · ${money.format(invoice.total)}</option>`).join("")}`;
+  if (!$("#return-expires-at").value) $("#return-expires-at").value = defaultCreditExpiry();
+  $("#return-note-list").innerHTML = state.creditNotes.map((note) => `<article><div><strong>${escapeHtml(note.provider_encf || note.en_ncf)}</strong><span>${escapeHtml(note.source_client_name || "Consumidor final")} · ${escapeHtml(note.credit_status || note.status)}</span></div><div><strong>${money.format(note.available_amount || 0)}</strong><span>Saldo disponible</span></div></article>`).join("") || `<div class="empty-state">No hay notas de crédito emitidas.</div>`;
+}
+
+async function loadCreditReturnItems() {
+  const invoiceId = Number($("#credit-source-invoice")?.value || 0);
+  state.creditSourceItems = [];
+  if (!invoiceId) { $("#credit-return-items").innerHTML = `<div class="empty-state">Selecciona la factura original.</div>`; return; }
+  const payload = await api(`/api/invoices/${invoiceId}`);
+  state.creditSourceItems = payload.invoice?.items || [];
+  $("#credit-return-items").innerHTML = state.creditSourceItems.map((item) => `<label class="credit-return-row"><input type="checkbox" data-return-product="${escapeHtml(item.product_id)}" checked /><span>${escapeHtml(item.name)}</span><input class="input" data-return-quantity="${escapeHtml(item.product_id)}" type="number" min="0.01" max="${Number(item.quantity)}" step="0.01" value="${Number(item.quantity)}" /><small>de ${Number(item.quantity).toLocaleString("es-DO")}</small></label>`).join("");
 }
 
 function bindCash() {
@@ -1792,6 +1927,8 @@ async function issueCreditNote(event) {
   const button = $("#issue-credit-note");
   button.disabled = true;
   try {
+    const items = Array.from($$("#credit-return-items [data-return-product]:checked")).map((checkbox) => ({ product_id: checkbox.dataset.returnProduct, quantity: Number($(`#credit-return-items [data-return-quantity="${CSS.escape(checkbox.dataset.returnProduct)}"]`).value || 0) }));
+    if (!items.length) { toast("Selecciona al menos un artículo para devolver.", true); return; }
     const result = await api("/api/credit-notes", {
       method: "POST",
       body: JSON.stringify({
@@ -1799,6 +1936,8 @@ async function issueCreditNote(event) {
         modification_code: $("#credit-modification-code").value,
         reason: $("#credit-reason").value.trim(),
         expires_at: $("#credit-expires-at").value,
+        items,
+        restock: $("#credit-restock").checked,
       }),
     });
     toast(result.imecf_warning || `E34 ${result.credit_note.provider_encf || result.credit_note.en_ncf} procesado.`, Boolean(result.imecf_warning));
@@ -2411,6 +2550,9 @@ async function issueInvoice() {
     general_discount_percent: cartTotals().generalDiscountPercent,
     credit_amount: requestedCredit,
     credit_note_code: $("#credit-note-code").value.trim().toUpperCase(),
+    due_date: $("#sale-due-date").value,
+    manager_identifier: $("#manager-identifier").value.trim(),
+    manager_password: $("#manager-password").value,
     items: state.cart.map((item) => ({ product_id: item.product_id, quantity: item.quantity, unit_price: item.unit_price, discount_percent: Number(item.discount_percent || 0) })),
   };
   const button = $("#issue-invoice");

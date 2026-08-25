@@ -16,12 +16,16 @@ Aplicación publicada: https://ahg-construferret-pos.vercel.app/
 - Confirmación por correo al cliente cuando proporciona una dirección válida.
 - Maestro de artículos, categorías, precios, ITBIS, costos, stock y mínimo.
 - Directorios de clientes y proveedores con consulta fiscal.
+- Compras y recepción de mercancía con costo promedio, cuentas por pagar y pagos a proveedores.
+- Ventas a crédito con vencimiento, cuentas por cobrar, abonos y reflejo automático en caja.
+- Devoluciones parciales o totales con comprobante E34, vigencia comercial y reposición opcional de inventario.
 - Inventario con existencias, alertas y movimientos.
 - Gestión fiscal con IMECF en TESTeCF, estados, tracking, XML y e-CF 34.
 - Facturas con vista previa, forma de pago, descuentos, QR y consulta DGII.
 - Cuadre de caja con apertura, movimientos, pagos, cierre y diferencia.
 - Auditoría limitada a acciones realizadas por usuarios.
 - Administración de usuarios con acceso individual por módulo y respaldo JSON.
+- Autorización gerencial para cambios de precio y descuentos superiores al límite configurado.
 - Búsqueda y recomendación local por nombre, SKU, código de barras o necesidad.
 
 ## Mejoras de seguridad y operación
@@ -29,12 +33,16 @@ Aplicación publicada: https://ahg-construferret-pos.vercel.app/
 - Caja independiente por usuario y terminal.
 - Reporte gerencial por período con ventas, margen estimado, impuestos, descuentos, medios de pago y productos principales.
 - Cola recuperable para reintentar confirmaciones por correo y documentos IMECF que fallen temporalmente.
+- Reintento diario automático en Vercel Cron, respetando espera entre intentos y un máximo de cinco fallos.
 - Asistente híbrido: recomendación determinística siempre disponible y redacción con Ollama cuando existe un servidor accesible.
 - Bloqueo temporal después de cinco intentos fallidos de acceso.
 - Validación de origen y encabezados CSP/HSTS en las respuestas HTTP.
 - Clientes y proveedores solo se desactivan después de confirmar la contraseña real del usuario.
 - Stock, secuencias y notas de crédito se reservan mediante transacciones y bloqueos de PostgreSQL.
 - Una base PostgreSQL nueva exige `AHG_ADMIN_EMAIL` y `AHG_ADMIN_PASSWORD`.
+- Las tablas de Supabase activan RLS y revocan el acceso directo de los roles de navegador; toda operación pasa por la API.
+- Los respaldos requieren reautenticación y excluyen contraseñas, sesiones y credenciales cifradas.
+- El portal público limita solicitudes de prefacturas y consultas del asistente por dirección y ventana de tiempo.
 
 ## Arquitectura
 
@@ -85,7 +93,7 @@ $env:PYTHONPATH="$PWD"
 
 ## Configuración de producción
 
-La aplicación productiva requiere una base PostgreSQL persistente. Para Vercel se recomienda la cadena Session Pooler IPv4 de Supabase.
+La aplicación productiva requiere una base PostgreSQL persistente. Para Vercel se recomienda la cadena Transaction Pooler IPv4 de Supabase con SSL.
 
 Variables principales:
 
@@ -95,6 +103,10 @@ AHG_CREDENTIAL_SECRET=<secreto-largo>
 AHG_ACADEMIC_MODE=1
 AHG_DEMO_MODE=0
 AHG_AUTH_SECURE_COOKIE=1
+AHG_MAX_DISCOUNT_WITHOUT_APPROVAL_PERCENT=10
+AHG_PUBLIC_QUOTE_LIMIT=5
+AHG_PUBLIC_AI_LIMIT=30
+CRON_SECRET=<secreto-largo-distinto>
 IMECF_BASE_URL=https://ecf-platform-backend-50801509587.us-central1.run.app
 IMECF_API_KEY=<clave-de-prueba>
 IMECF_ENABLED=1
@@ -136,13 +148,15 @@ vercel.cmd deploy --prod --yes
 ## Operación resumida
 
 1. Revisa la portada pública y pulsa **Acceder** para iniciar sesión; el dashboard será la primera pantalla autenticada.
-2. Revisa pendientes, stock crítico, caja y documentos fiscales.
-3. Abre **Venta**, agrega productos y selecciona cliente y tipo de comprobante.
+2. Revisa pendientes, cuentas por cobrar/pagar, stock crítico, caja y documentos fiscales.
+3. Abre caja antes de facturar; luego abre **Venta**, agrega productos y selecciona cliente y tipo de comprobante.
 4. Si usarás una nota, pulsa **Consultar notas vigentes** y luego **Cargar nota**.
 5. Selecciona el medio para el monto restante; usa **Dividir saldo restante** solo si habrá dos medios adicionales.
 6. Guarda una pre-factura o emite el comprobante de prueba.
-7. Consulta el documento en **Facturas** o **Gestión Fiscal**.
-8. Cierra el turno desde **Cuadre de caja**.
+7. Recibe mercancía en **Compras** y registra pagos pendientes al proveedor.
+8. Registra abonos de clientes en **Cuentas por cobrar**.
+9. Gestiona devoluciones parciales o completas en **Devoluciones**.
+10. Consulta el documento en **Facturas** o **Gestión Fiscal** y cierra el turno desde **Cuadre de caja**.
 
 ## Permisos
 
@@ -152,9 +166,9 @@ Perfiles iniciales sugeridos:
 
 - `admin`: acceso completo.
 - `gerente`: operación completa excepto Administración.
-- `cajero`: venta, clientes, pre-facturas, facturas y caja.
-- `vendedor`: venta, clientes, pre-facturas, asistente y facturas.
-- `almacen`: artículos, proveedores e inventario.
+- `cajero`: venta, clientes, pre-facturas, devoluciones, cuentas por cobrar, facturas y caja.
+- `vendedor`: venta, clientes, pre-facturas, asistente, devoluciones, cuentas por cobrar y facturas.
+- `almacen`: artículos, proveedores, compras e inventario.
 
 ## Documentación
 

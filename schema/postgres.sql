@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     status TEXT NOT NULL DEFAULT 'emitida',
     payment_method TEXT NOT NULL DEFAULT 'efectivo',
     issued_at TIMESTAMPTZ NOT NULL,
+    due_date TEXT NOT NULL DEFAULT '',
+    approved_by INTEGER,
     fiscal_environment TEXT NOT NULL DEFAULT 'academico',
     xml_text TEXT
 );
@@ -87,9 +89,10 @@ CREATE TABLE IF NOT EXISTS invoices (
 CREATE TABLE IF NOT EXISTS invoice_items (
     id SERIAL PRIMARY KEY,
     invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
-    product_id VARCHAR(13) NOT NULL REFERENCES products(id),
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id),
     quantity NUMERIC(12, 2) NOT NULL,
     unit_price NUMERIC(12, 2) NOT NULL,
+    unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0,
     discount_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
     tax_rate NUMERIC(5, 4) NOT NULL,
     line_subtotal NUMERIC(12, 2) NOT NULL,
@@ -99,7 +102,7 @@ CREATE TABLE IF NOT EXISTS invoice_items (
 
 CREATE TABLE IF NOT EXISTS inventory_movements (
     id SERIAL PRIMARY KEY,
-    product_id VARCHAR(13) NOT NULL REFERENCES products(id),
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id),
     movement_type TEXT NOT NULL,
     quantity NUMERIC(12, 2) NOT NULL,
     reference TEXT NOT NULL,
@@ -291,3 +294,95 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+    id SERIAL PRIMARY KEY,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+    order_number TEXT NOT NULL UNIQUE,
+    supplier_invoice_number TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'borrador' CHECK(status IN ('borrador', 'recibida', 'pagada', 'cancelada')),
+    subtotal NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    tax NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    total NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    amount_paid NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    balance_due NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    ordered_at TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ,
+    created_by INTEGER REFERENCES users(id),
+    notes TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+    id SERIAL PRIMARY KEY,
+    purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id),
+    quantity NUMERIC(12, 3) NOT NULL CHECK(quantity > 0),
+    unit_cost NUMERIC(12, 2) NOT NULL CHECK(unit_cost >= 0),
+    tax_rate NUMERIC(5, 4) NOT NULL DEFAULT 0.18,
+    line_subtotal NUMERIC(12, 2) NOT NULL,
+    line_tax NUMERIC(12, 2) NOT NULL,
+    line_total NUMERIC(12, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+    id SERIAL PRIMARY KEY,
+    purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    cash_session_id INTEGER REFERENCES cash_sessions(id),
+    amount NUMERIC(12, 2) NOT NULL CHECK(amount > 0),
+    payment_method TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS customer_receivables (
+    id SERIAL PRIMARY KEY,
+    invoice_id INTEGER NOT NULL UNIQUE REFERENCES invoices(id) ON DELETE CASCADE,
+    client_id INTEGER NOT NULL REFERENCES clients(id),
+    original_amount NUMERIC(12, 2) NOT NULL,
+    balance NUMERIC(12, 2) NOT NULL,
+    due_date DATE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pendiente' CHECK(status IN ('pendiente', 'parcial', 'pagada', 'vencida')),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS customer_payments (
+    id SERIAL PRIMARY KEY,
+    receivable_id INTEGER NOT NULL REFERENCES customer_receivables(id) ON DELETE CASCADE,
+    cash_session_id INTEGER REFERENCES cash_sessions(id),
+    amount NUMERIC(12, 2) NOT NULL CHECK(amount > 0),
+    payment_method TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credit_note_items (
+    id SERIAL PRIMARY KEY,
+    credit_note_id INTEGER NOT NULL REFERENCES credit_notes(id) ON DELETE CASCADE,
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id),
+    quantity NUMERIC(12, 3) NOT NULL CHECK(quantity > 0),
+    unit_price NUMERIC(12, 2) NOT NULL,
+    discount_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    tax_rate NUMERIC(5, 4) NOT NULL,
+    line_subtotal NUMERIC(12, 2) NOT NULL,
+    line_tax NUMERIC(12, 2) NOT NULL,
+    line_total NUMERIC(12, 2) NOT NULL,
+    restocked BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS public_rate_limits (
+    key_hash TEXT NOT NULL,
+    action TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY(key_hash, action)
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(supplier_id, ordered_at);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_order ON supplier_payments(purchase_order_id);
+CREATE INDEX IF NOT EXISTS idx_receivables_client_status ON customer_receivables(client_id, status, due_date);
+CREATE INDEX IF NOT EXISTS idx_customer_payments_receivable ON customer_payments(receivable_id);
+CREATE INDEX IF NOT EXISTS idx_credit_note_items_note ON credit_note_items(credit_note_id);

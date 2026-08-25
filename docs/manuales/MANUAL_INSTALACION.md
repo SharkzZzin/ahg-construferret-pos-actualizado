@@ -77,9 +77,11 @@ Registra las variables en **Vercel > Project > Settings > Environment Variables*
 Variables principales:
 
 - `DATABASE_URL`: cadena PostgreSQL de Supabase.
-- `SECRET_KEY`: secreto largo y aleatorio para sesiones.
-- `PUBLIC_BASE_URL`: `https://ahg-construferret-pos.vercel.app`.
-- `PAYMENT_MODE`: modo de prueba configurado para el proyecto.
+- `AHG_CREDENTIAL_SECRET`: secreto largo y aleatorio que cifra las credenciales fiscales guardadas.
+- `AHG_AUTH_SECURE_COOKIE`: `1` en producción.
+- `AHG_PUBLIC_QUOTE_LIMIT` y `AHG_PUBLIC_AI_LIMIT`: límites por ventana para el portal público.
+- `AHG_MAX_DISCOUNT_WITHOUT_APPROVAL_PERCENT`: descuento máximo antes de exigir autorización gerencial.
+- `CRON_SECRET`: secreto largo usado por Vercel para proteger el reintento automático de integraciones.
 - `PAYPAL_CLIENT_ID` y `PAYPAL_CLIENT_SECRET`: credenciales sandbox si PayPal está habilitado.
 - `PAYPAL_MODE`: `sandbox`.
 
@@ -92,7 +94,7 @@ Correo mediante Gmail SMTP, como alternativa:
 
 - `SMTP_HOST`: `smtp.gmail.com`.
 - `SMTP_PORT`: `587`.
-- `SMTP_USER`: cuenta Gmail remitente.
+- `SMTP_USERNAME`: cuenta Gmail remitente.
 - `SMTP_PASSWORD`: contraseña de aplicación de Google, sin espacios.
 - `SMTP_USE_TLS`: `true`.
 - `EMAIL_FROM`: cuenta Gmail remitente.
@@ -103,6 +105,8 @@ IMECF:
 - Usa únicamente la URL de prueba.
 - Verifica la conexión antes de emitir.
 - Nunca guardes tokens o secretos en el repositorio.
+
+El esquema activa Row Level Security en las tablas públicas de Supabase y revoca el acceso directo de los roles `anon` y `authenticated`. El navegador trabaja únicamente mediante la API del sistema. `vercel.json` ejecuta diariamente `/api/cron/integrations`; Vercel envía `CRON_SECRET` como autorización.
 
 ## 7. Vincular y desplegar en Vercel
 

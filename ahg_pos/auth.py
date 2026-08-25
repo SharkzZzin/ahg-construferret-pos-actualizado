@@ -16,9 +16,12 @@ PASSWORD_KEY_LENGTH = 64
 
 ALL_MODULES = (
     "sale",
+    "returns",
     "products",
     "clients",
     "suppliers",
+    "purchases",
+    "receivables",
     "preinvoices",
     "assistant",
     "inventory",
@@ -32,9 +35,9 @@ ALL_MODULES = (
 ROLE_DEFAULT_MODULES = {
     "admin": ALL_MODULES,
     "gerente": tuple(module for module in ALL_MODULES if module != "admin"),
-    "cajero": ("sale", "clients", "preinvoices", "reports", "cash"),
-    "vendedor": ("sale", "clients", "preinvoices", "assistant", "reports"),
-    "almacen": ("products", "suppliers", "inventory"),
+    "cajero": ("sale", "returns", "clients", "preinvoices", "receivables", "reports", "cash"),
+    "vendedor": ("sale", "returns", "clients", "preinvoices", "receivables", "assistant", "reports"),
+    "almacen": ("products", "suppliers", "purchases", "inventory"),
 }
 
 

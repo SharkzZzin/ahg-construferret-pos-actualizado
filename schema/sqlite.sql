@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS invoices (
     status TEXT NOT NULL DEFAULT 'emitida',
     payment_method TEXT NOT NULL DEFAULT 'efectivo',
     issued_at TEXT NOT NULL,
+    due_date TEXT NOT NULL DEFAULT '',
+    approved_by INTEGER,
     fiscal_environment TEXT NOT NULL DEFAULT 'academico',
     xml_text TEXT
 );
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS invoice_items (
     product_id TEXT NOT NULL REFERENCES products(id),
     quantity REAL NOT NULL,
     unit_price REAL NOT NULL,
+    unit_cost REAL NOT NULL DEFAULT 0,
     discount_amount REAL NOT NULL DEFAULT 0,
     tax_rate REAL NOT NULL,
     line_subtotal REAL NOT NULL,
@@ -289,3 +292,47 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id), order_number TEXT NOT NULL UNIQUE,
+    supplier_invoice_number TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'borrador',
+    subtotal REAL NOT NULL DEFAULT 0, tax REAL NOT NULL DEFAULT 0, total REAL NOT NULL DEFAULT 0,
+    amount_paid REAL NOT NULL DEFAULT 0, balance_due REAL NOT NULL DEFAULT 0,
+    ordered_at TEXT NOT NULL, received_at TEXT, created_by INTEGER REFERENCES users(id), notes TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id), quantity REAL NOT NULL, unit_cost REAL NOT NULL,
+    tax_rate REAL NOT NULL DEFAULT 0.18, line_subtotal REAL NOT NULL, line_tax REAL NOT NULL, line_total REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS supplier_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_order_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    cash_session_id INTEGER REFERENCES cash_sessions(id), amount REAL NOT NULL, payment_method TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '', created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS customer_receivables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_id INTEGER NOT NULL UNIQUE REFERENCES invoices(id) ON DELETE CASCADE,
+    client_id INTEGER NOT NULL REFERENCES clients(id), original_amount REAL NOT NULL, balance REAL NOT NULL,
+    due_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pendiente', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS customer_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, receivable_id INTEGER NOT NULL REFERENCES customer_receivables(id) ON DELETE CASCADE,
+    cash_session_id INTEGER REFERENCES cash_sessions(id), amount REAL NOT NULL, payment_method TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '', created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credit_note_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, credit_note_id INTEGER NOT NULL REFERENCES credit_notes(id) ON DELETE CASCADE,
+    product_id VARCHAR(40) NOT NULL REFERENCES products(id), quantity REAL NOT NULL, unit_price REAL NOT NULL,
+    discount_amount REAL NOT NULL DEFAULT 0, tax_rate REAL NOT NULL, line_subtotal REAL NOT NULL,
+    line_tax REAL NOT NULL, line_total REAL NOT NULL, restocked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS public_rate_limits (
+    key_hash TEXT NOT NULL, action TEXT NOT NULL, window_start TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL, PRIMARY KEY(key_hash, action)
+);
+CREATE INDEX IF NOT EXISTS idx_purchase_orders_supplier ON purchase_orders(supplier_id, ordered_at);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_order ON supplier_payments(purchase_order_id);
+CREATE INDEX IF NOT EXISTS idx_receivables_client_status ON customer_receivables(client_id, status, due_date);
+CREATE INDEX IF NOT EXISTS idx_customer_payments_receivable ON customer_payments(receivable_id);
+CREATE INDEX IF NOT EXISTS idx_credit_note_items_note ON credit_note_items(credit_note_id);

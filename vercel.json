@@ -12,5 +12,11 @@
       "includeFiles": "{ahg_pos/**,schema/**}",
       "excludeFiles": "{tests/**,output/**,tmp/**,docs/**,.venv/**,data/**,**/*.db,**/*.sqlite}"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/integrations",
+      "schedule": "15 11 * * *"
+    }
+  ]
 }

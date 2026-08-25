@@ -21,6 +21,9 @@ Consulta `docs/manuales/MANUAL_USUARIO.md` para aprender, con capturas reales, a
 - consultar y aplicar notas de crédito vigentes;
 - registrar pagos mixtos;
 - administrar artículos, clientes y proveedores;
+- recibir compras, actualizar costos y pagar balances de proveedores;
+- administrar cuentas por cobrar y registrar abonos;
+- emitir devoluciones parciales o totales con reposición de inventario;
 - atender solicitudes Customer;
 - controlar inventario;
 - operar Gestión Fiscal e IMECF en prueba;
@@ -65,8 +68,10 @@ Abre `http://127.0.0.1:8765/`. El modo local usa SQLite cuando no existe `DATABA
 3. Atiende pre-facturas y solicitudes Customer.
 4. Factura y registra todos los medios de pago.
 5. Consulta una nota vigente antes de aplicarla.
-6. Revisa inventario y documentos fiscales pendientes.
-7. Cierra la caja y valida Auditoría.
+6. Recibe mercancía en Compras y registra cobros o pagos pendientes.
+7. Gestiona devoluciones y verifica su nota de crédito.
+8. Revisa inventario y documentos fiscales pendientes.
+9. Cierra la caja y valida Auditoría.
 
 ## Seguridad
 

@@ -70,7 +70,15 @@ class Settings:
         "IMECF_PORTAL_BASE_URL",
         "https://ecf-platform-frontend-50801509587.us-central1.run.app",
     ).rstrip("/")
-    auth_secure_cookie: bool = os.getenv("AHG_AUTH_SECURE_COOKIE", "0") == "1"
+    auth_secure_cookie: bool = os.getenv(
+        "AHG_AUTH_SECURE_COOKIE", "1" if os.getenv("VERCEL") else "0"
+    ) == "1"
+    cron_secret: str = os.getenv("CRON_SECRET", "").strip()
+    public_quote_limit: int = int(os.getenv("AHG_PUBLIC_QUOTE_LIMIT", "5"))
+    public_ai_limit: int = int(os.getenv("AHG_PUBLIC_AI_LIMIT", "30"))
+    max_discount_without_approval_percent: float = float(
+        os.getenv("AHG_MAX_DISCOUNT_WITHOUT_APPROVAL_PERCENT", "10")
+    )
     credential_secret: str = os.getenv("AHG_CREDENTIAL_SECRET", "").strip() or load_credential_secret(DATA_DIR)
     paypal_client_id: str = os.getenv("PAYPAL_CLIENT_ID", "").strip()
     paypal_client_secret: str = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()

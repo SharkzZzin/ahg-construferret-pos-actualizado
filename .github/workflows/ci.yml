@@ -1,0 +1,26 @@
+name: Calidad y pruebas
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+      - name: Verificar dependencias
+        run: python -m pip check
+      - name: Compilar código Python
+        run: python -m compileall -q ahg_pos tests
+      - name: Ejecutar pruebas
+        run: python -m unittest discover -s tests -v

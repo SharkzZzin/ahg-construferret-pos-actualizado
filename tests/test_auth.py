@@ -18,7 +18,7 @@ class PasswordTests(unittest.TestCase):
         self.assertFalse(verify_password("password", "sha256$bad$value"))
 
     def test_module_permissions_use_role_defaults_and_filter_unknown_values(self) -> None:
-        self.assertEqual(normalize_user_modules(None, "almacen"), ("products", "suppliers", "inventory"))
+        self.assertEqual(normalize_user_modules(None, "almacen"), ("products", "suppliers", "purchases", "inventory"))
         self.assertEqual(normalize_user_modules(["audit", "unknown", "sale"], "cajero"), ("sale", "audit"))
         self.assertEqual(normalize_user_modules([], "admin"), ALL_MODULES)
 

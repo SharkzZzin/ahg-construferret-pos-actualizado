@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import mimetypes
 import sys
 from datetime import date, timedelta
@@ -96,13 +97,23 @@ class POSHandler(BaseHTTPRequestHandler):
                     self.send_redirect("/")
                 else:
                     self.send_file(WEB_DIR / "login.html")
-            elif path == "/static/logo-ahg.png":
+            elif path in {"/static/logo-ahg.png", "/favicon.ico"}:
                 self.send_logo()
             elif path in {"/static/login.css", "/static/login.js"}:
                 self.send_file(STATIC_DIR / path.removeprefix("/static/"))
             elif path == "/api/auth/session":
                 user = self.current_user()
                 self.send_json({"authenticated": bool(user), "user": user.public() if user else None})
+            elif path == "/api/cron/integrations":
+                if not settings.cron_secret:
+                    self.send_error_json(503, "El proceso automático no está configurado.")
+                    return
+                supplied = self.headers.get("Authorization", "")
+                expected = f"Bearer {settings.cron_secret}"
+                if not hmac.compare_digest(supplied, expected):
+                    self.send_error_json(401, "No autorizado.")
+                    return
+                self.send_json(self.retry_integrations())
             elif path.startswith("/api/public/tracking/"):
                 token = unquote(path.removeprefix("/api/public/tracking/"))
                 tracking = DB.track_invoice_by_token(token)
@@ -125,11 +136,6 @@ class POSHandler(BaseHTTPRequestHandler):
             elif path == "/api/users":
                 self.require_fiscal_admin("admin")
                 self.send_json({"users": DB.list_users()})
-            elif path == "/api/admin/backup":
-                user = self.require_fiscal_admin("admin")
-                DB.log_audit(int(user.id), "Generar backup", "seguridad", "", {"database": DB.kind})
-                body = json.dumps(DB.export_backup(), ensure_ascii=False, indent=2).encode("utf-8")
-                self.send_bytes(body, content_type="application/json; charset=utf-8", headers={"Content-Disposition": "attachment; filename=ahg-pos-backup.json"})
             elif path == "/api/public/taxpayer":
                 value = parse_qs(parsed.query).get("value", [""])[0]
                 self.send_json(imecf_client().lookup_taxpayer(value))
@@ -202,6 +208,12 @@ class POSHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 result = DB.list_suppliers_page(query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
                 self.send_json({"suppliers": result["items"], "pagination": result})
+            elif path == "/api/purchases":
+                self.require_module_access("purchases")
+                self.send_json({"purchases": DB.list_purchase_orders()})
+            elif path == "/api/receivables":
+                self.require_module_access("receivables")
+                self.send_json({"receivables": DB.list_receivables()})
             elif path == "/api/preinvoices":
                 self.require_any_module("sale", "preinvoices")
                 query = parse_qs(parsed.query)
@@ -212,7 +224,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 preinvoice_id = int(path.removeprefix("/api/preinvoices/"))
                 self.send_json({"preinvoice": DB.get_preinvoice(preinvoice_id)})
             elif path == "/api/credit-notes":
-                self.require_any_module("sale", "fiscal", "reports")
+                self.require_any_module("returns", "sale", "fiscal", "reports")
                 query = parse_qs(parsed.query)
                 result = DB.list_credit_notes_page(query.get("page", ["1"])[0], query.get("limit", ["25"])[0])
                 for note in result["items"]:
@@ -229,7 +241,7 @@ class POSHandler(BaseHTTPRequestHandler):
                     "available_total": round(sum(float(note["available_amount"]) for note in notes), 2),
                 })
             elif path.startswith("/api/credit-notes/"):
-                self.require_any_module("fiscal", "reports")
+                self.require_any_module("returns", "fiscal", "reports")
                 note_id = int(path.removeprefix("/api/credit-notes/"))
                 self.send_json({"credit_note": DB.get_credit_note(note_id)})
             elif path == "/api/cash-register":
@@ -242,7 +254,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 self.require_module_access("inventory")
                 self.send_json({"alerts": DB.low_stock()})
             elif path == "/api/invoices":
-                self.require_module_access("reports")
+                self.require_any_module("returns", "reports")
                 query = parse_qs(parsed.query)
                 result = DB.recent_invoices_page(
                     query.get("q", [""])[0], query.get("page", ["1"])[0], query.get("limit", ["25"])[0]
@@ -256,7 +268,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 end = query.get("end", [today.isoformat()])[0]
                 self.send_json({"report": DB.management_report(start, end)})
             elif path.startswith("/api/invoices/") and path.count("/") == 3:
-                self.require_any_module("sale", "preinvoices", "reports")
+                self.require_any_module("returns", "sale", "preinvoices", "reports")
                 invoice_id = int(path.split("/")[3])
                 self.send_json({"invoice": invoice_public_model(DB.get_invoice(invoice_id))})
             elif path == "/api/fiscal/dashboard":
@@ -391,7 +403,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 DB.log_audit(int(user.id), "Inicio de sesión", "usuario", user.id, {"email": user.email})
                 self.send_json(
                     {"ok": True, "user": user.public()},
-                    headers={"Set-Cookie": session_cookie(token, settings.auth_secure_cookie)},
+                    headers={"Set-Cookie": session_cookie(token, self.secure_cookie())},
                 )
             elif path == "/api/auth/logout":
                 token = self.session_token()
@@ -401,14 +413,18 @@ class POSHandler(BaseHTTPRequestHandler):
                     DB.log_audit(int(user.id), "Cierre de sesión", "usuario", user.id)
                 self.send_json(
                     {"ok": True},
-                    headers={"Set-Cookie": clear_session_cookie(settings.auth_secure_cookie)},
+                    headers={"Set-Cookie": clear_session_cookie(self.secure_cookie())},
                 )
             elif path == "/api/users":
                 user = self.require_fiscal_admin("admin")
-                created = DB.save_user(payload)
+                created = DB.save_user(payload, actor_user_id=int(user.id))
                 DB.log_audit(int(user.id), "Crear usuario", "usuario", created.get("id"), {"email": created.get("email"), "role": created.get("role")})
                 self.send_json({"user": created}, status=201)
             elif path == "/api/public/quote-requests":
+                DB.consume_public_rate_limit(
+                    "quote", client_address(self.headers, self.client_address[0] if self.client_address else ""),
+                    settings.public_quote_limit,
+                )
                 customer_name = str(payload.get("customer_name", "")).strip()
                 phone = str(payload.get("phone", "")).strip()
                 email = str(payload.get("email", "")).strip()
@@ -439,6 +455,10 @@ class POSHandler(BaseHTTPRequestHandler):
                 DB.log_audit(None, "Recibir prefactura", "pre-factura pública", request.get("id"), {"email": email, "email_sent": email_result.get("sent", False)})
                 self.send_json({"request": request, "email": email_result}, status=201)
             elif path == "/api/public/ai/agent":
+                DB.consume_public_rate_limit(
+                    "ai", client_address(self.headers, self.client_address[0] if self.client_address else ""),
+                    settings.public_ai_limit,
+                )
                 action = str(payload.get("action", "consult")).strip().lower()
                 if action == "prepare_quote":
                     self.send_json({"quote": prepare_quote(DB, payload.get("items") or [])})
@@ -456,6 +476,10 @@ class POSHandler(BaseHTTPRequestHandler):
                 )
                 self.send_json(result)
             elif path == "/api/public/ai/consult":
+                DB.consume_public_rate_limit(
+                    "ai", client_address(self.headers, self.client_address[0] if self.client_address else ""),
+                    settings.public_ai_limit,
+                )
                 query = str(payload.get("query", "")).strip()
                 history = payload.get("history") or []
                 context = str(payload.get("context", "")).strip()
@@ -556,6 +580,30 @@ class POSHandler(BaseHTTPRequestHandler):
                 supplier = DB.save_supplier(payload)
                 DB.log_audit(int(self.current_user().id), "Crear proveedor", "proveedor", supplier.get("id"), {"name": supplier.get("name")})
                 self.send_json({"supplier": supplier}, status=201)
+            elif path == "/api/purchases":
+                user = self.require_module_access("purchases")
+                purchase = DB.receive_purchase(payload, int(user.id))
+                DB.log_audit(int(user.id), "Recibir compra", "compra", purchase.get("id"), {"total": purchase.get("total")})
+                self.send_json({"purchase": purchase}, status=201)
+            elif path.startswith("/api/purchases/") and path.endswith("/payments"):
+                user = self.require_module_access("purchases")
+                order_id = int(path.split("/")[3])
+                purchase = DB.record_supplier_payment(order_id, payload, int(user.id))
+                DB.log_audit(int(user.id), "Registrar pago a proveedor", "compra", order_id, {"amount": payload.get("amount")})
+                self.send_json({"purchase": purchase}, status=201)
+            elif path.startswith("/api/receivables/") and path.endswith("/payments"):
+                user = self.require_module_access("receivables")
+                receivable_id = int(path.split("/")[3])
+                receivable = DB.record_customer_payment(receivable_id, payload, int(user.id))
+                DB.log_audit(int(user.id), "Registrar cobro", "cuenta_por_cobrar", receivable_id, {"amount": payload.get("amount")})
+                self.send_json({"receivable": receivable}, status=201)
+            elif path == "/api/admin/backup":
+                user = self.require_fiscal_admin("admin")
+                if not DB.verify_user_password(int(user.id), str(payload.get("current_password") or "")):
+                    raise PermissionError("Confirma tu contraseña para generar el respaldo.")
+                DB.log_audit(int(user.id), "Generar backup", "seguridad", "", {"database": DB.kind})
+                body = json.dumps(DB.export_backup(), ensure_ascii=False, indent=2).encode("utf-8")
+                self.send_bytes(body, content_type="application/json; charset=utf-8", headers={"Content-Disposition": "attachment; filename=ahg-pos-backup.json"})
             elif path == "/api/preinvoices":
                 user = self.require_any_module("sale", "preinvoices")
                 draft = DB.save_preinvoice(payload, user.id)
@@ -581,6 +629,9 @@ class POSHandler(BaseHTTPRequestHandler):
                         "general_discount": draft.get("general_discount", 0),
                         "credit_amount": payload.get("credit_amount", 0),
                         "credit_note_code": payload.get("credit_note_code", ""),
+                        "due_date": payload.get("due_date", ""),
+                        "manager_identifier": payload.get("manager_identifier", ""),
+                        "manager_password": payload.get("manager_password", ""),
                         "items": [
                             {
                                 "product_id": item["product_id"],
@@ -596,7 +647,7 @@ class POSHandler(BaseHTTPRequestHandler):
                 result["preinvoice_id"] = preinvoice_id
                 self.send_json(result, status=201)
             elif path == "/api/credit-notes":
-                self.require_any_module("sale", "fiscal", "reports")
+                self.require_any_module("returns", "sale", "fiscal", "reports")
                 imecf = imecf_client()
                 note = DB.create_credit_note(
                     source_invoice_id=int(payload.get("source_invoice_id")),
@@ -604,6 +655,8 @@ class POSHandler(BaseHTTPRequestHandler):
                     reason=str(payload.get("reason", "")),
                     fiscal_environment=imecf.company.environment,
                     expires_at=str(payload.get("expires_at", "")),
+                    items=payload.get("items") or None,
+                    restock=bool(payload.get("restock", True)),
                 )
                 warning = ""
                 if imecf.active:
@@ -712,7 +765,7 @@ class POSHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/users/"):
                 user = self.require_fiscal_admin("admin")
                 user_id = int(path.removeprefix("/api/users/"))
-                updated = DB.save_user(self.read_json(), user_id=user_id)
+                updated = DB.save_user(self.read_json(), user_id=user_id, actor_user_id=int(user.id))
                 DB.log_audit(int(user.id), "Actualizar usuario", "usuario", user_id, {"email": updated.get("email"), "role": updated.get("role"), "active": updated.get("active")})
                 self.send_json({"user": updated})
             elif path.startswith("/api/products/"):
@@ -814,6 +867,13 @@ class POSHandler(BaseHTTPRequestHandler):
 
     def emit_invoice(self, payload: dict) -> dict:
         imecf = imecf_client()
+        approval_identifier = str(payload.get("manager_identifier") or "").strip()
+        approval_password = str(payload.get("manager_password") or "")
+        approved_by = None
+        if approval_identifier or approval_password:
+            approved_by = DB.verify_manager_credentials(approval_identifier, approval_password)
+            if not approved_by:
+                raise PermissionError("La autorización del gerente no es válida.")
         invoice = DB.create_invoice(
             ecf_type=str(payload.get("ecf_type", "32")),
             client=payload.get("client") or {},
@@ -826,6 +886,8 @@ class POSHandler(BaseHTTPRequestHandler):
             credit_note_code=str(payload.get("credit_note_code") or ""),
             payments=payload.get("payments") or None,
             cash_user_id=int(self.current_user().id) if self.current_user() else None,
+            due_date=str(payload.get("due_date") or ""),
+            approved_by_user_id=approved_by,
         )
         xml_text = build_ecf_xml(invoice, imecf.company)
         DB.update_invoice_xml(int(invoice["id"]), xml_text)
@@ -902,6 +964,7 @@ class POSHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, no-store")
         self.send_security_headers()
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -913,6 +976,7 @@ class POSHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, no-store")
         self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -921,6 +985,7 @@ class POSHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "private, no-store")
         self.send_security_headers()
         for name, value in (headers or {}).items():
             self.send_header(name, value)
@@ -929,6 +994,10 @@ class POSHandler(BaseHTTPRequestHandler):
 
     def session_token(self) -> str:
         return parse_cookie_token(self.headers.get("Cookie"))
+
+    def secure_cookie(self) -> bool:
+        forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+        return settings.auth_secure_cookie or forwarded_proto == "https"
 
     def current_user(self):
         if hasattr(self, "_current_user"):

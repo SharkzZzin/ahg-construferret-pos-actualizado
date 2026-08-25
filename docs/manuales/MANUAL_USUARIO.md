@@ -144,7 +144,37 @@ Evita duplicar clientes y confirma el RNC antes de emitir un e-CF 31.
 
 ![Módulo de proveedores](capturas/04-proveedores.png)
 
-Registra razón social, RNC, contacto, teléfono, correo, dirección, actividad y notas. Usa **Editar** para mantener el registro y **Eliminar** cuando ya no se utilice. El módulo sirve como directorio para abastecimiento; no crea cuentas por pagar.
+Registra razón social, RNC, contacto, teléfono, correo, dirección, actividad y notas. Usa **Editar** para mantener el registro y **Eliminar** cuando ya no se utilice. Los proveedores activos aparecen al recibir mercancía en **Compras**.
+
+### Compras y cuentas por pagar
+
+![Compras y recepción de mercancía](capturas/16-compras.png)
+
+1. Abre **Compras** y selecciona el proveedor.
+2. Indica la factura del proveedor.
+3. Agrega cada producto con la cantidad y el costo unitario recibido.
+4. Registra el pago inicial y su forma; deja el monto en cero si queda totalmente pendiente.
+5. Pulsa **Recibir y actualizar inventario**.
+
+El sistema aumenta las existencias, calcula el costo promedio ponderado y conserva el balance. Usa **Registrar pago** en el historial para amortizar una cuenta pendiente. Los pagos en efectivo exigen una caja abierta y se descuentan del efectivo esperado.
+
+### Cuentas por cobrar
+
+![Cuentas por cobrar](capturas/17-cuentas-cobrar.png)
+
+Al elegir **Crédito** en Venta, selecciona un cliente y confirma la fecha de vencimiento. La factura crea una cuenta por cobrar por el saldo completo. En **Cuentas por cobrar**, pulsa **Registrar cobro**, indica el monto y la forma de pago. Los cobros en efectivo exigen caja abierta y se suman al cuadre.
+
+### Devoluciones parciales y totales
+
+![Devoluciones y notas de crédito](capturas/18-devoluciones.png)
+
+1. Abre **Devoluciones** y selecciona una factura electrónica aceptada.
+2. Escribe el motivo y la vigencia comercial del saldo.
+3. Marca los artículos y cantidades que regresan; no es necesario devolver la factura completa.
+4. Conserva marcada la reposición si los artículos vuelven al inventario.
+5. Emite el E34 y consulta el saldo en la lista de notas.
+
+El sistema impide devolver más unidades que las vendidas, aun cuando existan varias devoluciones parciales sobre la misma factura.
 
 ## 8. Pre-facturas
 

@@ -148,7 +148,7 @@ def compute_invoice_totals(lines: list[dict[str, Any]], general_discount: float 
 
 
 POSTGRES_SCHEMA_LOCK_ID = 2026081001
-POSTGRES_SCHEMA_VERSION = "2026-08-11-security-atomicity-v4"
+POSTGRES_SCHEMA_VERSION = "2026-08-24-business-controls-v5"
 
 
 class Database:
@@ -220,6 +220,7 @@ class Database:
         self.ensure_public_quote_request_table()
         self.ensure_user_columns()
         self.ensure_security_tables()
+        self.ensure_business_columns()
         self.ensure_audit_table()
         self.ensure_audit_triggers()
         if self.scalar("SELECT COUNT(*) FROM products") == 0:
@@ -227,6 +228,54 @@ class Database:
         self.ensure_reference_data()
         self.ensure_initial_admin()
         self.ensure_initial_fiscal_company()
+        self.ensure_supabase_security()
+
+    def ensure_business_columns(self) -> None:
+        invoice_item_columns = self._column_names("invoice_items")
+        if "unit_cost" not in invoice_item_columns:
+            self.execute("ALTER TABLE invoice_items ADD COLUMN unit_cost NUMERIC(12, 2) NOT NULL DEFAULT 0")
+            if self.kind == "postgres":
+                self.execute("UPDATE invoice_items ii SET unit_cost = p.cost FROM products p WHERE p.id = ii.product_id")
+            else:
+                self.execute("UPDATE invoice_items SET unit_cost = COALESCE((SELECT cost FROM products WHERE products.id = invoice_items.product_id), 0)")
+        invoice_columns = self._column_names("invoices")
+        if "due_date" not in invoice_columns:
+            self.execute("ALTER TABLE invoices ADD COLUMN due_date TEXT NOT NULL DEFAULT ''")
+        if "approved_by" not in invoice_columns:
+            self.execute("ALTER TABLE invoices ADD COLUMN approved_by INTEGER")
+        if self.kind == "postgres":
+            self.execute("ALTER TABLE invoice_items ALTER COLUMN product_id TYPE VARCHAR(40)")
+            self.execute("ALTER TABLE inventory_movements ALTER COLUMN product_id TYPE VARCHAR(40)")
+            self.execute("ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_status_check")
+            self.execute("""ALTER TABLE purchase_orders ADD CONSTRAINT purchase_orders_status_check
+                          CHECK(status IN ('borrador', 'recibida', 'pagada', 'cancelada'))""")
+        self.conn.commit()
+
+    def ensure_supabase_security(self) -> None:
+        """Keep the server-owned public schema closed to Supabase browser roles."""
+        if self.kind != "postgres":
+            return
+        tables = (
+            "categories", "products", "clients", "suppliers", "fiscal_sequences", "invoices",
+            "invoice_items", "inventory_movements", "daily_transactions", "cash_sessions",
+            "cash_movements", "invoice_payments", "preinvoices", "preinvoice_items", "credit_notes",
+            "credit_note_sequences", "credit_applications", "credit_note_items", "ai_search_logs",
+            "ecf_api_records", "fiscal_companies", "users", "user_sessions", "audit_logs",
+            "invoice_tracking_tokens", "public_quote_requests", "login_attempts", "integration_retry_jobs",
+            "purchase_orders", "purchase_order_items", "supplier_payments", "customer_receivables",
+            "customer_payments", "public_rate_limits", "ahg_schema_state",
+        )
+        browser_roles = [
+            role for role in ("anon", "authenticated")
+            if bool(self.scalar("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = ?)", (role,)))
+        ]
+        for table in tables:
+            self.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')
+            if browser_roles:
+                self.execute(f'REVOKE ALL ON TABLE "{table}" FROM {", ".join(browser_roles)}')
+        if browser_roles:
+            self.execute(f'REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {", ".join(browser_roles)}')
+        self.conn.commit()
 
     def postgres_schema_is_current(self) -> bool:
         self.execute(
@@ -900,6 +949,20 @@ class Database:
         ))
         return bool(row and verify_password(password, row["password_hash"]))
 
+    def verify_manager_credentials(self, identifier: str, password: str) -> int | None:
+        normalized = str(identifier or "").strip().lower()
+        if not normalized or not password:
+            return None
+        phone = "".join(ch for ch in normalized if ch.isdigit())
+        row = self.fetch_one(
+            """SELECT id, password_hash FROM users
+               WHERE active = ? AND role IN ('admin', 'gerente')
+                 AND (LOWER(email) = ? OR phone = ?)
+               LIMIT 1""",
+            (True if self.kind == "postgres" else 1, normalized, phone),
+        )
+        return int(row["id"]) if row and verify_password(password, row["password_hash"]) else None
+
     def list_fiscal_companies(self) -> list[dict[str, Any]]:
         rows = self.fetch_all(
             """
@@ -1059,6 +1122,38 @@ class Database:
         now = datetime.now(locked_until.tzinfo or timezone.utc)
         return locked_until <= now
 
+    def consume_public_rate_limit(
+        self, action: str, client_address: str, limit: int, window_minutes: int = 15
+    ) -> None:
+        action = str(action or "public").strip().lower()[:80]
+        key_hash = hashlib.sha256(f"{action}|{client_address}".encode("utf-8")).hexdigest()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        row = self.fetch_one(
+            "SELECT window_start, request_count FROM public_rate_limits WHERE key_hash = ? AND action = ?",
+            (key_hash, action),
+        )
+        count = 1
+        window_start = now_dt
+        if row:
+            previous = self._parse_datetime(row.get("window_start")).astimezone(timezone.utc)
+            if now_dt - previous < timedelta(minutes=window_minutes):
+                count = int(row.get("request_count") or 0) + 1
+                window_start = previous
+        window_text = window_start.isoformat(timespec="seconds")
+        self.execute(
+            """
+            INSERT INTO public_rate_limits(key_hash, action, window_start, request_count, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key_hash, action) DO UPDATE SET
+                window_start = ?, request_count = ?, updated_at = ?
+            """,
+            (key_hash, action, window_text, count, now, window_text, count, now),
+        )
+        self.conn.commit()
+        if count > max(1, int(limit)):
+            raise RateLimitError("Demasiadas solicitudes. Espera unos minutos antes de intentar nuevamente.")
+
     def _record_login_failure(self, identifier: str, client_address: str) -> None:
         key = self._login_attempt_key(identifier, client_address)
         now_dt = datetime.now(timezone.utc)
@@ -1147,7 +1242,10 @@ class Database:
 
     def pending_integration_retries(self, limit: int = 25) -> list[dict[str, Any]]:
         rows = self.fetch_all(
-            "SELECT * FROM integration_retry_jobs WHERE status = 'pendiente' ORDER BY id LIMIT ?", (min(100, max(1, limit)),)
+            """SELECT * FROM integration_retry_jobs
+               WHERE status = 'pendiente' AND attempts < 5 AND next_attempt_at <= ?
+               ORDER BY next_attempt_at, id LIMIT ?""",
+            (self.now(), min(100, max(1, limit))),
         )
         for row in rows:
             with suppress(json.JSONDecodeError):
@@ -1159,7 +1257,10 @@ class Database:
         now = self.now()
         if error:
             self.execute(
-                "UPDATE integration_retry_jobs SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ?",
+                """UPDATE integration_retry_jobs
+                   SET attempts = attempts + 1,
+                       status = CASE WHEN attempts + 1 >= 5 THEN 'fallido' ELSE 'pendiente' END,
+                       last_error = ?, next_attempt_at = ?, updated_at = ? WHERE id = ?""",
                 (str(error)[:2000], (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(timespec="seconds"), now, retry_id),
             )
         else:
@@ -1811,6 +1912,196 @@ class Database:
         self.conn.commit()
         return self.get_public_quote_request(request_id)
 
+    def list_purchase_orders(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.fetch_all(
+            """SELECT po.*, s.name AS supplier_name, s.rnc_cedula
+               FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
+               ORDER BY po.id DESC LIMIT ?""",
+            (min(200, max(1, int(limit))),),
+        )
+
+    def get_purchase_order(self, order_id: int) -> dict[str, Any]:
+        order = self.fetch_one(
+            """SELECT po.*, s.name AS supplier_name, s.rnc_cedula
+               FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
+               WHERE po.id = ?""", (order_id,),
+        )
+        if not order:
+            raise DatabaseError("Compra no encontrada.")
+        order["items"] = self.fetch_all(
+            """SELECT poi.*, p.name, p.sku FROM purchase_order_items poi
+               JOIN products p ON p.id = poi.product_id
+               WHERE poi.purchase_order_id = ? ORDER BY poi.id""", (order_id,),
+        )
+        order["payments"] = self.fetch_all(
+            "SELECT * FROM supplier_payments WHERE purchase_order_id = ? ORDER BY id", (order_id,),
+        )
+        return order
+
+    def receive_purchase(self, payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+        supplier_id = int(payload.get("supplier_id") or 0)
+        supplier = self.fetch_one("SELECT id FROM suppliers WHERE id = ? AND active = ?", (
+            supplier_id, True if self.kind == "postgres" else 1,
+        ))
+        if not supplier:
+            raise DatabaseError("Selecciona un proveedor activo.")
+        raw_items = payload.get("items") or []
+        if not raw_items:
+            raise DatabaseError("La compra necesita al menos un producto.")
+        now = self.now()
+        try:
+            self.conn.execute("BEGIN")
+            lines: list[dict[str, Any]] = []
+            seen_products: set[str] = set()
+            for raw in raw_items:
+                product_id = str(raw.get("product_id") or "").strip()
+                if product_id in seen_products:
+                    raise DatabaseError("Cada producto debe aparecer una sola vez en la compra.")
+                seen_products.add(product_id)
+                quantity = round(float(raw.get("quantity") or 0), 4)
+                unit_cost = round(float(raw.get("unit_cost") or 0), 2)
+                product = self.fetch_one(
+                    "SELECT id, name, stock, cost, tax_rate FROM products WHERE id = ?" + (" FOR UPDATE" if self.kind == "postgres" else ""),
+                    (product_id,),
+                )
+                if not product or quantity <= 0 or unit_cost < 0:
+                    raise DatabaseError("Revisa los productos, cantidades y costos de la compra.")
+                tax_rate = float(raw.get("tax_rate") if raw.get("tax_rate") not in (None, "") else product["tax_rate"])
+                subtotal = round(quantity * unit_cost, 2)
+                tax = round(subtotal * tax_rate, 2)
+                lines.append({"product": product, "quantity": quantity, "unit_cost": unit_cost,
+                              "tax_rate": tax_rate, "subtotal": subtotal, "tax": tax, "total": round(subtotal + tax, 2)})
+            subtotal = round(sum(line["subtotal"] for line in lines), 2)
+            tax = round(sum(line["tax"] for line in lines), 2)
+            total = round(subtotal + tax, 2)
+            initial_payment = round(float(payload.get("amount_paid") or 0), 2)
+            if initial_payment < 0 or initial_payment > total:
+                raise DatabaseError("El pago inicial no puede superar el total de la compra.")
+            payment_method = str(payload.get("payment_method") or "transferencia").strip().lower()
+            if payment_method not in {"efectivo", "tarjeta", "transferencia", "credito", "paypal"}:
+                raise DatabaseError("La forma de pago de la compra no es válida.")
+            cash_session = self.get_open_cash_session(user_id) if payment_method == "efectivo" and initial_payment else None
+            if payment_method == "efectivo" and initial_payment and not cash_session:
+                raise DatabaseError("Abre la caja antes de pagar una compra en efectivo.")
+            order_number = f"OC-{datetime.now().strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+            order_id = self.insert_and_get_id(
+                """INSERT INTO purchase_orders(supplier_id, order_number, supplier_invoice_number, status,
+                       subtotal, tax, total, amount_paid, balance_due, ordered_at, received_at, created_by, notes)
+                   VALUES (?, ?, ?, 'recibida', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (supplier_id, order_number, str(payload.get("supplier_invoice_number") or "")[:80], subtotal, tax,
+                 total, initial_payment, round(total - initial_payment, 2), now, now, user_id, str(payload.get("notes") or "")[:500]),
+            )
+            for line in lines:
+                product = line["product"]
+                old_stock = float(product["stock"])
+                new_stock = old_stock + line["quantity"]
+                average_cost = round(((old_stock * float(product["cost"])) + (line["quantity"] * line["unit_cost"])) / new_stock, 2)
+                self.execute(
+                    """INSERT INTO purchase_order_items(purchase_order_id, product_id, quantity, unit_cost, tax_rate,
+                           line_subtotal, line_tax, line_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (order_id, product["id"], line["quantity"], line["unit_cost"], line["tax_rate"],
+                     line["subtotal"], line["tax"], line["total"]),
+                )
+                self.execute("UPDATE products SET stock = ?, cost = ?, updated_at = ? WHERE id = ?",
+                             (new_stock, average_cost, now, product["id"]))
+                self.execute(
+                    "INSERT INTO inventory_movements(product_id, movement_type, quantity, reference, created_at) VALUES (?, 'compra', ?, ?, ?)",
+                    (product["id"], line["quantity"], order_number, now),
+                )
+            if initial_payment:
+                self.execute(
+                    """INSERT INTO supplier_payments(purchase_order_id, cash_session_id, amount, payment_method,
+                           reference, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (order_id, cash_session["id"] if cash_session else None, initial_payment, payment_method,
+                     str(payload.get("payment_reference") or "")[:100], user_id, now),
+                )
+            self.conn.commit()
+            return self.get_purchase_order(order_id)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def record_supplier_payment(self, order_id: int, payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+        try:
+            self.conn.execute("BEGIN")
+            order = self.fetch_one("SELECT * FROM purchase_orders WHERE id = ?" + (" FOR UPDATE" if self.kind == "postgres" else ""), (order_id,))
+            if not order or float(order.get("balance_due") or 0) <= 0:
+                raise DatabaseError("La compra no tiene un balance pendiente.")
+            amount = round(float(payload.get("amount") or 0), 2)
+            balance = float(order["balance_due"])
+            if amount <= 0 or amount > balance:
+                raise DatabaseError("El pago debe ser mayor que cero y no superar el balance.")
+            method = str(payload.get("payment_method") or "transferencia").strip().lower()
+            if method not in {"efectivo", "tarjeta", "transferencia", "paypal"}:
+                raise DatabaseError("La forma de pago al proveedor no es válida.")
+            cash_session = self.get_open_cash_session(user_id) if method == "efectivo" else None
+            if method == "efectivo" and not cash_session:
+                raise DatabaseError("Abre la caja antes de pagar al proveedor en efectivo.")
+            new_balance = round(balance - amount, 2)
+            now = self.now()
+            self.execute(
+                """INSERT INTO supplier_payments(purchase_order_id, cash_session_id, amount, payment_method,
+                       reference, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (order_id, cash_session["id"] if cash_session else None, amount, method,
+                 str(payload.get("reference") or "")[:100], user_id, now),
+            )
+            self.execute("UPDATE purchase_orders SET amount_paid = amount_paid + ?, balance_due = ?, status = ? WHERE id = ?",
+                         (amount, new_balance, "pagada" if new_balance == 0 else "recibida", order_id))
+            self.conn.commit()
+            return self.get_purchase_order(order_id)
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def list_receivables(self, limit: int = 100) -> list[dict[str, Any]]:
+        self.execute(
+            "UPDATE customer_receivables SET status = 'vencida', updated_at = ? WHERE due_date < ? AND status IN ('pendiente', 'parcial')",
+            (self.now(), date.today().isoformat()),
+        )
+        self.conn.commit()
+        return self.fetch_all(
+            """SELECT cr.*, i.en_ncf, c.name AS client_name, c.rnc_cedula
+               FROM customer_receivables cr JOIN invoices i ON i.id = cr.invoice_id
+               JOIN clients c ON c.id = cr.client_id
+               ORDER BY CASE WHEN cr.status IN ('pendiente','parcial') THEN 0 ELSE 1 END, cr.due_date, cr.id DESC LIMIT ?""",
+            (min(200, max(1, int(limit))),),
+        )
+
+    def record_customer_payment(self, receivable_id: int, payload: dict[str, Any], user_id: int) -> dict[str, Any]:
+        try:
+            self.conn.execute("BEGIN")
+            receivable = self.fetch_one("SELECT * FROM customer_receivables WHERE id = ?" + (" FOR UPDATE" if self.kind == "postgres" else ""), (receivable_id,))
+            if not receivable or receivable["status"] == "pagada":
+                raise DatabaseError("La cuenta por cobrar no está disponible.")
+            amount = round(float(payload.get("amount") or 0), 2)
+            balance = float(receivable["balance"])
+            if amount <= 0 or amount > balance:
+                raise DatabaseError("El abono debe ser mayor que cero y no superar el balance.")
+            method = str(payload.get("payment_method") or "efectivo").strip().lower()
+            if method not in {"efectivo", "tarjeta", "transferencia", "paypal"}:
+                raise DatabaseError("La forma de cobro no es válida.")
+            cash_session = self.get_open_cash_session(user_id) if method == "efectivo" else None
+            if method == "efectivo" and not cash_session:
+                raise DatabaseError("Abre la caja antes de recibir efectivo.")
+            new_balance = round(balance - amount, 2)
+            new_status = "pagada" if new_balance == 0 else (
+                "vencida" if str(receivable.get("due_date") or "") < date.today().isoformat() else "parcial"
+            )
+            now = self.now()
+            self.execute(
+                """INSERT INTO customer_payments(receivable_id, cash_session_id, amount, payment_method, reference, created_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (receivable_id, cash_session["id"] if cash_session else None, amount, method,
+                 str(payload.get("reference") or "")[:100], user_id, now),
+            )
+            self.execute("UPDATE customer_receivables SET balance = ?, status = ?, updated_at = ? WHERE id = ?",
+                         (new_balance, new_status, now, receivable_id))
+            self.conn.commit()
+            return self.fetch_one("SELECT * FROM customer_receivables WHERE id = ?", (receivable_id,)) or {}
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def list_users(self) -> list[dict[str, Any]]:
         rows = self.fetch_all(
             """
@@ -1827,7 +2118,10 @@ class Database:
         result["modules"] = list(normalize_user_modules(result.pop("module_permissions_json", None), role))
         return result
 
-    def save_user(self, payload: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
+    def save_user(
+        self, payload: dict[str, Any], user_id: int | None = None,
+        actor_user_id: int | None = None,
+    ) -> dict[str, Any]:
         name = str(payload.get("name", "")).strip()
         email = str(payload.get("email", "")).strip().lower()
         phone = "".join(ch for ch in str(payload.get("phone", "")) if ch.isdigit())
@@ -1844,9 +2138,21 @@ class Database:
         now = self.now()
         try:
             if user_id is not None:
-                existing = self.fetch_one("SELECT id, module_permissions_json FROM users WHERE id = ?", (int(user_id),))
+                existing = self.fetch_one(
+                    "SELECT id, role, active, module_permissions_json FROM users WHERE id = ?", (int(user_id),)
+                )
                 if not existing:
                     raise DatabaseError("Usuario no encontrado.")
+                if actor_user_id is not None and int(user_id) == int(actor_user_id) and (role != "admin" or not active):
+                    raise DatabaseError("No puedes quitarte tu propio acceso de administrador.")
+                disabling_admin = existing.get("role") == "admin" and (role != "admin" or not active)
+                if disabling_admin:
+                    active_admins = int(self.scalar(
+                        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND active = ?",
+                        (True if self.kind == "postgres" else 1,),
+                    ) or 0)
+                    if active_admins <= 1:
+                        raise DatabaseError("Debe permanecer al menos un administrador activo.")
                 raw_modules = payload.get("modules") if "modules" in payload else existing.get("module_permissions_json")
                 modules_json = json.dumps(normalize_user_modules(raw_modules, role), ensure_ascii=False)
                 if password:
@@ -1871,10 +2177,23 @@ class Database:
             tables = [row["name"] for row in self.fetch_all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
         else:
             tables = [row["table_name"] for row in self.fetch_all("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name")]
+        excluded = {"user_sessions", "login_attempts", "public_rate_limits"}
         data: dict[str, Any] = {}
         for table in tables:
-            data[table] = self.fetch_all(f'SELECT * FROM "{table}"')
-        return {"format": "ahg-pos-backup-v1", "database": self.kind, "generated_at": self.now(), "tables": data}
+            if table in excluded:
+                continue
+            rows = self.fetch_all(f'SELECT * FROM "{table}"')
+            if table == "users":
+                for row in rows:
+                    row.pop("password_hash", None)
+            elif table == "fiscal_companies":
+                for row in rows:
+                    row.pop("encrypted_api_key", None)
+            elif table == "integration_retry_jobs":
+                for row in rows:
+                    row.pop("payload_json", None)
+            data[table] = rows
+        return {"format": "ahg-pos-backup-v2-sanitized", "database": self.kind, "generated_at": self.now(), "tables": data}
 
     def get_public_quote_request(self, request_id: int) -> dict[str, Any]:
         row = self.fetch_one("SELECT * FROM public_quote_requests WHERE id = ?", (request_id,))
@@ -2085,6 +2404,8 @@ class Database:
         reason: str,
         fiscal_environment: str,
         expires_at: str = "",
+        items: list[dict[str, Any]] | None = None,
+        restock: bool = True,
     ) -> dict[str, Any]:
         if modification_code not in {"1", "2", "3"}:
             raise DatabaseError("El código de modificación E34 debe ser 1, 2 o 3.")
@@ -2094,12 +2415,53 @@ class Database:
         source = self.get_invoice(source_invoice_id)
         if not source.get("provider_encf"):
             raise DatabaseError("El E34 requiere una factura electrónica previamente enviada a IMECF.")
-        existing = self.fetch_one(
-            "SELECT id FROM credit_notes WHERE source_invoice_id = ? AND api_status NOT LIKE '%Rechaz%'",
-            (source_invoice_id,),
+        source_items = {str(line["product_id"]): line for line in source.get("items", [])}
+        legacy_note = self.fetch_one(
+            """SELECT cn.id FROM credit_notes cn
+               WHERE cn.source_invoice_id = ? AND COALESCE(cn.api_status, '') NOT LIKE '%Rechaz%'
+                 AND NOT EXISTS (SELECT 1 FROM credit_note_items cni WHERE cni.credit_note_id = cn.id)
+               LIMIT 1""", (source_invoice_id,),
         )
-        if existing:
-            raise DatabaseError("Esta factura ya tiene una nota de crédito E34 registrada.")
+        if legacy_note:
+            raise DatabaseError("Esta factura ya fue acreditada completamente.")
+        returned_rows = self.fetch_all(
+            """SELECT cni.product_id, COALESCE(SUM(cni.quantity), 0) AS quantity
+               FROM credit_note_items cni JOIN credit_notes cn ON cn.id = cni.credit_note_id
+               WHERE cn.source_invoice_id = ? AND COALESCE(cn.api_status, '') NOT LIKE '%Rechaz%'
+               GROUP BY cni.product_id""", (source_invoice_id,),
+        )
+        returned = {str(row["product_id"]): float(row["quantity"]) for row in returned_rows}
+        requested = items or [
+            {"product_id": product_id, "quantity": float(line["quantity"]) - returned.get(product_id, 0)}
+            for product_id, line in source_items.items()
+            if float(line["quantity"]) - returned.get(product_id, 0) > 0
+        ]
+        note_lines: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in requested:
+            product_id = str(raw.get("product_id") or "").strip()
+            if product_id in seen or product_id not in source_items:
+                raise DatabaseError("La selección contiene un producto inválido o repetido.")
+            seen.add(product_id)
+            source_line = source_items[product_id]
+            quantity = round(float(raw.get("quantity") or 0), 4)
+            remaining = round(float(source_line["quantity"]) - returned.get(product_id, 0), 4)
+            if quantity <= 0 or quantity > remaining:
+                raise DatabaseError(f"La cantidad a devolver de {source_line['name']} supera lo disponible ({remaining:g}).")
+            ratio = quantity / float(source_line["quantity"])
+            note_lines.append({
+                "product_id": product_id, "quantity": quantity, "unit_price": float(source_line["unit_price"]),
+                "discount_amount": round(float(source_line.get("discount_amount") or 0) * ratio, 2),
+                "tax_rate": float(source_line["tax_rate"]),
+                "line_subtotal": round(float(source_line["line_subtotal"]) * ratio, 2),
+                "line_tax": round(float(source_line["line_tax"]) * ratio, 2),
+                "line_total": round(float(source_line["line_total"]) * ratio, 2),
+            })
+        if not note_lines:
+            raise DatabaseError("No quedan artículos disponibles para acreditar.")
+        note_subtotal = round(sum(line["line_subtotal"] for line in note_lines), 2)
+        note_tax = round(sum(line["line_tax"] for line in note_lines), 2)
+        note_total = round(sum(line["line_total"] for line in note_lines), 2)
         try:
             self.conn.execute("BEGIN")
             sequence = self.fetch_one("SELECT current_number FROM credit_note_sequences WHERE id = 1")
@@ -2124,10 +2486,27 @@ class Database:
                 """,
                 (
                     source_invoice_id, en_ncf, modification_code, reason,
-                    source["subtotal"], source["tax"], source["total"],
+                    note_subtotal, note_tax, note_total,
                     "emitida", now, expiry_date.isoformat(), fiscal_environment,
                 ),
             )
+            for line in note_lines:
+                self.execute(
+                    """INSERT INTO credit_note_items(credit_note_id, product_id, quantity, unit_price,
+                           discount_amount, tax_rate, line_subtotal, line_tax, line_total, restocked)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (note_id, line["product_id"], line["quantity"], line["unit_price"], line["discount_amount"],
+                     line["tax_rate"], line["line_subtotal"], line["line_tax"], line["line_total"],
+                     restock if self.kind == "postgres" else int(restock)),
+                )
+                if restock:
+                    self.execute("UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?",
+                                 (line["quantity"], now, line["product_id"]))
+                    self.execute(
+                        """INSERT INTO inventory_movements(product_id, movement_type, quantity, reference, created_at)
+                           VALUES (?, 'devolucion', ?, ?, ?)""",
+                        (line["product_id"], line["quantity"], en_ncf, now),
+                    )
             self.conn.commit()
             return self.get_credit_note(note_id)
         except Exception:
@@ -2153,16 +2532,19 @@ class Database:
         if not note:
             raise DatabaseError("Nota de crédito no encontrada.")
         note["items"] = self.fetch_all(
-            """
-            SELECT ii.product_id, p.name, ii.quantity, ii.unit_price,
-                   ii.tax_rate, ii.line_subtotal, ii.line_tax, ii.line_total
-            FROM invoice_items ii
-            JOIN products p ON p.id = ii.product_id
-            WHERE ii.invoice_id = ?
-            ORDER BY ii.id
-            """,
-            (note["source_invoice_id"],),
+            """SELECT cni.product_id, p.name, cni.quantity, cni.unit_price,
+                      cni.discount_amount, cni.tax_rate, cni.line_subtotal, cni.line_tax,
+                      cni.line_total, cni.restocked
+               FROM credit_note_items cni JOIN products p ON p.id = cni.product_id
+               WHERE cni.credit_note_id = ? ORDER BY cni.id""", (note_id,),
         )
+        if not note["items"]:
+            note["items"] = self.fetch_all(
+                """SELECT ii.product_id, p.name, ii.quantity, ii.unit_price, ii.discount_amount,
+                          ii.tax_rate, ii.line_subtotal, ii.line_tax, ii.line_total, 0 AS restocked
+                   FROM invoice_items ii JOIN products p ON p.id = ii.product_id
+                   WHERE ii.invoice_id = ? ORDER BY ii.id""", (note["source_invoice_id"],),
+            )
         note["applied_amount"] = float(self.scalar(
             "SELECT COALESCE(SUM(amount), 0) FROM credit_applications WHERE credit_note_id = ?",
             (note_id,),
@@ -2336,12 +2718,22 @@ class Database:
             (session["id"],),
         )
         cash_sales = sum(float(row["amount"]) for row in payment_rows if row["payment_method"] == "efectivo")
+        customer_collections = float(self.scalar(
+            "SELECT COALESCE(SUM(amount), 0) FROM customer_payments WHERE cash_session_id = ? AND payment_method = 'efectivo'",
+            (session["id"],),
+        ) or 0)
+        supplier_disbursements = float(self.scalar(
+            "SELECT COALESCE(SUM(amount), 0) FROM supplier_payments WHERE cash_session_id = ? AND payment_method = 'efectivo'",
+            (session["id"],),
+        ) or 0)
         entries = sum(float(row["amount"]) for row in movements if row["movement_type"] == "entrada")
         exits = sum(float(row["amount"]) for row in movements if row["movement_type"] == "salida")
-        expected = round(float(session.get("opening_amount") or 0) + cash_sales + entries - exits, 2)
+        expected = round(float(session.get("opening_amount") or 0) + cash_sales + customer_collections + entries - supplier_disbursements - exits, 2)
         session["payments"] = payment_rows
         session["movements"] = movements
         session["cash_sales"] = round(cash_sales, 2)
+        session["customer_collections"] = round(customer_collections, 2)
+        session["supplier_disbursements"] = round(supplier_disbursements, 2)
         session["cash_entries"] = round(entries, 2)
         session["cash_exits"] = round(exits, 2)
         session["expected_cash"] = round(float(session.get("expected_cash") if session.get("expected_cash") is not None else expected), 2)
@@ -2513,6 +2905,12 @@ class Database:
         pending_requests = int(self.scalar(
             "SELECT COUNT(*) FROM public_quote_requests WHERE LOWER(status) = 'pendiente'"
         ) or 0)
+        receivables_due = float(self.scalar(
+            "SELECT COALESCE(SUM(balance), 0) FROM customer_receivables WHERE status IN ('pendiente', 'parcial', 'vencida')"
+        ) or 0)
+        payables_due = float(self.scalar(
+            "SELECT COALESCE(SUM(balance_due), 0) FROM purchase_orders WHERE balance_due > 0"
+        ) or 0)
         low_stock = int(self.scalar(
             "SELECT COUNT(*) FROM products WHERE active AND stock <= min_stock"
         ) or 0)
@@ -2552,7 +2950,10 @@ class Database:
                 "discounts": round(float(sales.get("discounts") or 0), 2),
                 "credit_applied": round(float(sales.get("credit_applied") or 0), 2),
             },
-            "pending": {"preinvoices": pending_preinvoices, "customer_requests": pending_requests},
+            "pending": {
+                "preinvoices": pending_preinvoices, "customer_requests": pending_requests,
+                "receivables_due": round(receivables_due, 2), "payables_due": round(payables_due, 2),
+            },
             "inventory": {"active_products": active_products, "low_stock": low_stock},
             "clients": {"active": active_clients},
             "credits": {
@@ -2587,8 +2988,8 @@ class Database:
             """, params,
         ) or {}
         cost = float(self.scalar(
-            """SELECT COALESCE(SUM(ii.quantity * p.cost), 0) FROM invoice_items ii
-               JOIN invoices i ON i.id = ii.invoice_id JOIN products p ON p.id = ii.product_id
+            """SELECT COALESCE(SUM(ii.quantity * ii.unit_cost), 0) FROM invoice_items ii
+               JOIN invoices i ON i.id = ii.invoice_id
                WHERE DATE(i.issued_at) BETWEEN ? AND ?""", params,
         ) or 0)
         sales = float(totals.get("sales") or 0)
@@ -2734,6 +3135,8 @@ class Database:
         credit_note_code: str = "",
         payments: list[dict[str, Any]] | None = None,
         cash_user_id: int | None = None,
+        due_date: str = "",
+        approved_by_user_id: int | None = None,
     ) -> dict[str, Any]:
         if ecf_type not in {"31", "32"}:
             raise DatabaseError("Solo se permiten e-CF tipo 31 o 32 en esta fase.")
@@ -2780,6 +3183,8 @@ class Database:
                         "name": product["name"],
                         "quantity": quantity,
                         "unit_price": unit_price,
+                        "catalog_price": float(product["price"]),
+                        "unit_cost": float(product.get("cost") or 0),
                         "discount_amount": discount_amount,
                         "tax_rate": tax_rate,
                         "line_gross": line_gross,
@@ -2805,6 +3210,10 @@ class Database:
             general_discount = totals["general_discount"]
             if total <= 0:
                 raise DatabaseError("La factura fiscal debe tener un total mayor que cero.")
+            override_used = any(abs(line["unit_price"] - line["catalog_price"]) > 0.009 for line in invoice_items)
+            discount_percent = (discount_total / (subtotal + discount_total) * 100) if subtotal + discount_total else 0
+            if (override_used or discount_percent > settings.max_discount_without_approval_percent) and not approved_by_user_id:
+                raise DatabaseError("El cambio de precio o descuento requiere autorización de un gerente.")
             client_id = self._ensure_client(client or {}, ecf_type, total)
             requested_credit = round(float(credit_amount or 0), 2)
             if requested_credit < 0:
@@ -2823,6 +3232,16 @@ class Database:
             payable_total = round(total - credit_applied, 2)
             tender_rows = normalize_invoice_payments(payments, payment_method, payable_total)
             fiscal_payment_rows = ([{"payment_method": "nota_credito", "amount": credit_applied}] if credit_applied > 0 else []) + tender_rows
+            if cash_user_id is not None and payable_total > 0 and payment_method != "credito" and not self.get_open_cash_session(cash_user_id):
+                raise DatabaseError("Abre la caja antes de facturar.")
+            normalized_due_date = ""
+            if payment_method == "credito":
+                if not client_id:
+                    raise DatabaseError("Una venta a crédito requiere un cliente registrado.")
+                try:
+                    normalized_due_date = date.fromisoformat(due_date).isoformat() if due_date else (date.today() + timedelta(days=30)).isoformat()
+                except ValueError as exc:
+                    raise DatabaseError("La fecha de vencimiento del crédito no es válida.") from exc
             if len(fiscal_payment_rows) > 7:
                 raise DatabaseError("La nota de crÃ©dito y los demÃ¡s pagos superan las siete formas permitidas por DGII.")
             if payable_total <= 0:
@@ -2838,9 +3257,9 @@ class Database:
                 """
                 INSERT INTO invoices(
                     en_ncf, ecf_type, client_id, subtotal, discount_total, general_discount, credit_applied, tax, total,
-                    status, payment_method, issued_at, fiscal_environment
+                    status, payment_method, issued_at, fiscal_environment, due_date, approved_by
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sequence,
@@ -2856,6 +3275,8 @@ class Database:
                     stored_payment_method,
                     issued_at,
                     fiscal_environment or settings.fiscal_environment,
+                    normalized_due_date,
+                    approved_by_user_id,
                 ),
             )
             if credit_applied > 0:
@@ -2868,9 +3289,9 @@ class Database:
                     """
                     INSERT INTO invoice_items(
                         invoice_id, product_id, quantity, unit_price,
-                        discount_amount, tax_rate, line_subtotal, line_tax, line_total
+                        discount_amount, tax_rate, line_subtotal, line_tax, line_total, unit_cost
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         invoice_id,
@@ -2882,6 +3303,7 @@ class Database:
                         line["line_subtotal"],
                         line["line_tax"],
                         line["line_total"],
+                        line["unit_cost"],
                     ),
                 )
                 stock_update = self.execute(
@@ -2912,6 +3334,13 @@ class Database:
                 self.execute(
                     "INSERT INTO daily_transactions(invoice_id, amount, payment_method, created_at) VALUES (?, ?, ?, ?)",
                     (invoice_id, row["amount"], row["payment_method"], issued_at),
+                )
+            if payment_method == "credito" and payable_total > 0:
+                self.execute(
+                    """INSERT INTO customer_receivables(
+                           invoice_id, client_id, original_amount, balance, due_date, status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, 'pendiente', ?, ?)""",
+                    (invoice_id, client_id, payable_total, payable_total, normalized_due_date, issued_at, issued_at),
                 )
             tracking_token = secrets.token_urlsafe(32)
             self.execute(
@@ -2951,7 +3380,7 @@ class Database:
         invoice["items"] = self.fetch_all(
             """
             SELECT
-                ii.product_id, p.sku, p.name, ii.quantity, ii.unit_price,
+                ii.product_id, p.sku, p.name, ii.quantity, ii.unit_price, ii.unit_cost,
                 COALESCE(ii.discount_amount, 0) AS discount_amount,
                 ii.tax_rate, ii.line_subtotal, ii.line_tax, ii.line_total
             FROM invoice_items ii
